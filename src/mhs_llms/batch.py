@@ -14,6 +14,7 @@ from openai import OpenAI
 import pandas as pd
 
 from mhs_llms.config import ModelBatchConfig, load_model_batch_config
+from mhs_llms.constants import REFERENCE_SET_PLATFORM
 from mhs_llms.dataset import build_comment_frame, load_mhs_dataframe
 from mhs_llms.schema import annotation_record_to_row, normalize_model_annotation
 
@@ -36,6 +37,12 @@ SUCCESSFUL_RESULT_STATUSES = {
     "google": {"JOB_STATE_SUCCEEDED", "JOB_STATE_PARTIALLY_SUCCEEDED"},
 }
 
+PROVIDER_API_ENV_VARS = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "google": "GEMINI_API_KEY",
+}
+
 
 @dataclass(frozen=True)
 class LaunchBatchOutputs:
@@ -55,22 +62,23 @@ class ProcessBatchOutputs:
     batch_metadata_path: Path
     status: str
     raw_results_path: Path | None
+    processed_records_path: Path | None
     processed_csv_path: Path | None
 
 
-def launch_model_batch(config_path: Path) -> LaunchBatchOutputs:
+def launch_batch(config_path: Path) -> LaunchBatchOutputs:
     """Create a provider batch job from the configured MHS comment slice."""
 
     config = load_model_batch_config(config_path)
-    run_dir = config.output.run_dir
+    run_dir = config.batches.run_dir
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    request_manifest_path = run_dir / config.output.request_manifest_filename
-    provider_requests_path = run_dir / config.output.provider_requests_filename
-    batch_metadata_path = run_dir / config.output.batch_metadata_filename
+    request_manifest_path = run_dir / config.batches.request_manifest_filename
+    provider_requests_path = run_dir / config.batches.provider_requests_filename
+    batch_metadata_path = run_dir / config.batches.batch_metadata_filename
 
     comments = _load_batch_comments(config)
-    logger.info("Preparing {} comments for {} batch launch", len(comments), config.provider.name)
+    logger.info("Preparing {} comments for {} batch launch", len(comments), config.model.provider)
 
     request_manifest, provider_requests = _build_requests(config=config, comments=comments)
     _write_jsonl(request_manifest_path, request_manifest)
@@ -82,23 +90,24 @@ def launch_model_batch(config_path: Path) -> LaunchBatchOutputs:
         provider_requests_path=provider_requests_path,
         provider_requests=provider_requests,
     )
-    batch_id = _batch_identifier(config.provider.name, batch_object)
-    status = _batch_status(config.provider.name, batch_object)
+    batch_id = _batch_identifier(config.model.provider, batch_object)
+    status = _batch_status(config.model.provider, batch_object)
 
     metadata = {
         "config_path": str(config_path.resolve()),
         "name": config.name,
-        "provider": config.provider.name,
-        "model": config.provider.model,
+        "provider": config.model.provider,
+        "model": config.model.name,
         "judge_id": _judge_id(config),
         "batch_id": batch_id,
         "status": status,
+        "subset": config.subset,
         "request_count": len(request_manifest),
         "submitted_at": _utcnow(),
         "provider_batch": _to_jsonable(batch_object),
     }
     _write_json(batch_metadata_path, metadata)
-    logger.info("Launched {} batch {} with status {}", config.provider.name, batch_id, status)
+    logger.info("Launched {} batch {} with status {}", config.model.provider, batch_id, status)
 
     return LaunchBatchOutputs(
         run_dir=run_dir,
@@ -108,47 +117,49 @@ def launch_model_batch(config_path: Path) -> LaunchBatchOutputs:
     )
 
 
-def process_model_batch(config_path: Path) -> ProcessBatchOutputs:
+def process_batch(config_path: Path, include_all_cols: bool = False) -> ProcessBatchOutputs:
     """Refresh batch status and download/process results once complete."""
 
     config = load_model_batch_config(config_path)
-    run_dir = config.output.run_dir
-    batch_metadata_path = run_dir / config.output.batch_metadata_filename
-    request_manifest_path = run_dir / config.output.request_manifest_filename
-    raw_results_path = run_dir / config.output.raw_results_filename
-    processed_records_path = run_dir / config.output.processed_records_filename
-    processed_csv_path = run_dir / config.output.processed_csv_filename
-    errors_path = run_dir / config.output.errors_filename
+    run_dir = config.batches.run_dir
+    batch_metadata_path = run_dir / config.batches.batch_metadata_filename
+    request_manifest_path = run_dir / config.batches.request_manifest_filename
+    raw_results_path = run_dir / config.batches.raw_results_filename
+    processed_records_path = run_dir / config.batches.processed_records_filename
+    processed_csv_path = run_dir / config.batches.processed_csv_filename
+    errors_path = run_dir / config.batches.errors_filename
 
     metadata = json.loads(batch_metadata_path.read_text())
     batch_id = str(metadata["batch_id"])
-    logger.info("Checking {} batch {}", config.provider.name, batch_id)
+    logger.info("Checking {} batch {}", config.model.provider, batch_id)
 
     batch_object = _retrieve_provider_batch(config=config, batch_id=batch_id)
-    status = _batch_status(config.provider.name, batch_object)
+    status = _batch_status(config.model.provider, batch_object)
     metadata["status"] = status
     metadata["last_checked_at"] = _utcnow()
     metadata["provider_batch"] = _to_jsonable(batch_object)
     _write_json(batch_metadata_path, metadata)
-    logger.info("Current {} batch status: {}", config.provider.name, status)
+    logger.info("Current {} batch status: {}", config.model.provider, status)
 
-    if status not in TERMINAL_BATCH_STATUSES[config.provider.name]:
+    if status not in TERMINAL_BATCH_STATUSES[config.model.provider]:
         logger.info("Batch {} is still running; no result download yet", batch_id)
         return ProcessBatchOutputs(
             run_dir=run_dir,
             batch_metadata_path=batch_metadata_path,
             status=status,
             raw_results_path=None,
+            processed_records_path=None,
             processed_csv_path=None,
         )
 
-    if status not in SUCCESSFUL_RESULT_STATUSES[config.provider.name]:
+    if status not in SUCCESSFUL_RESULT_STATUSES[config.model.provider]:
         logger.warning("Batch {} finished in terminal state {} with no downloadable results", batch_id, status)
         return ProcessBatchOutputs(
             run_dir=run_dir,
             batch_metadata_path=batch_metadata_path,
             status=status,
             raw_results_path=None,
+            processed_records_path=None,
             processed_csv_path=None,
         )
 
@@ -159,7 +170,7 @@ def process_model_batch(config_path: Path) -> ProcessBatchOutputs:
     manifest_rows = _read_jsonl(request_manifest_path)
     manifest_by_custom_id = {row["custom_id"]: row for row in manifest_rows}
 
-    extractor = _result_extractor(config.provider.name)
+    extractor = _result_extractor(config.model.provider)
     processed_rows: list[dict[str, Any]] = []
     processing_errors: list[dict[str, Any]] = []
 
@@ -195,14 +206,16 @@ def process_model_batch(config_path: Path) -> ProcessBatchOutputs:
                 text=str(manifest_row["text"]),
                 payload=payload,
                 metadata={
-                    "provider": config.provider.name,
-                    "model": config.provider.model,
+                    "provider": config.model.provider,
+                    "model": config.model.name,
                     "batch_id": batch_id,
                     "custom_id": custom_id,
                     "provider_response": response_metadata,
                 },
             )
-            processed_rows.append(annotation_record_to_row(record))
+            processed_rows.append(
+                annotation_record_to_row(record, include_metadata=include_all_cols)
+            )
         except Exception as exc:  # noqa: BLE001
             processing_errors.append(
                 {
@@ -233,25 +246,76 @@ def process_model_batch(config_path: Path) -> ProcessBatchOutputs:
         batch_metadata_path=batch_metadata_path,
         status=status,
         raw_results_path=raw_results_path,
+        processed_records_path=processed_records_path,
         processed_csv_path=processed_csv_path,
     )
+
+
+def write_processed_annotations(
+    processed_records_path: Path,
+    processed_csv_path: Path,
+    output_path: Path,
+) -> Path:
+    """Create or append processed annotations to a CSV or JSONL file."""
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if output_path.suffix == ".csv":
+        dataframe = pd.read_csv(processed_csv_path)
+        dataframe.to_csv(output_path, mode="a", header=not output_path.exists(), index=False)
+        return output_path
+
+    if output_path.suffix == ".jsonl":
+        lines = processed_records_path.read_text()
+        needs_separator = False
+        if output_path.exists() and output_path.stat().st_size > 0:
+            existing_text = output_path.read_text()
+            needs_separator = not existing_text.endswith("\n")
+        with output_path.open("a") as handle:
+            if needs_separator:
+                handle.write("\n")
+            handle.write(lines)
+            if lines and not lines.endswith("\n"):
+                handle.write("\n")
+        return output_path
+
+    raise ValueError("Output path must end in .csv or .jsonl")
 
 
 def _load_batch_comments(config: ModelBatchConfig) -> list[dict[str, Any]]:
     """Load one text row per comment for the configured evaluation slice."""
 
     dataset = load_mhs_dataframe(
-        dataset_name=config.dataset.name,
-        split=config.dataset.split,
-        config_name=config.dataset.config_name,
+        dataset_name="ucberkeley-dlab/measuring-hate-speech",
+        split="train",
+        config_name=None,
     )
-    comment_ids = None
-    if config.selection.comment_ids_path is not None:
-        comment_ids_frame = pd.read_csv(config.selection.comment_ids_path)
-        comment_ids = comment_ids_frame["comment_id"].astype(int).tolist()
+    comment_ids = _select_comment_ids(dataframe=dataset, subset=config.subset)
 
-    comments = build_comment_frame(dataset, comment_ids=comment_ids, limit=config.selection.limit)
+    comments = build_comment_frame(dataset, comment_ids=comment_ids, limit=config.limit)
     return comments.to_dict(orient="records")
+
+
+def _select_comment_ids(dataframe: pd.DataFrame, subset: str) -> list[int] | None:
+    """Return the in-code comment selection for a named batch subset."""
+
+    if subset == "reference_set":
+        return (
+            dataframe.loc[dataframe["platform"] == REFERENCE_SET_PLATFORM, "comment_id"]
+            .drop_duplicates()
+            .astype(int)
+            .sort_values(kind="stable")
+            .tolist()
+        )
+    if subset == "all_comments":
+        return (
+            dataframe["comment_id"]
+            .drop_duplicates()
+            .astype(int)
+            .sort_values(kind="stable")
+            .tolist()
+        )
+    raise ValueError(f"Unsupported subset: {subset}")
 
 
 def _build_requests(
@@ -268,7 +332,10 @@ def _build_requests(
         comment_id = int(comment["comment_id"])
         comment_text = str(comment["text"])
         custom_id = f"comment-{comment_id}"
-        user_prompt = config.prompt.user_prompt_template.format(comment_text=comment_text)
+        if config.prompt.user_prompt_template.strip():
+            user_prompt = config.prompt.user_prompt_template.format(comment_text=comment_text)
+        else:
+            user_prompt = comment_text
         request_manifest.append(
             {
                 "custom_id": custom_id,
@@ -278,12 +345,15 @@ def _build_requests(
         )
         provider_requests.append(
             _provider_request(
-                provider_name=config.provider.name,
+                provider_name=config.model.provider,
                 custom_id=custom_id,
-                model=config.provider.model,
+                model=config.model.name,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                model_params=config.provider.model_params,
+                max_tokens=config.model.max_tokens,
+                model_params=config.model.params,
+                reasoning_effort=config.model.reasoning.effort,
+                reasoning_budget_tokens=config.model.reasoning.budget_tokens,
                 comment_id=comment_id,
             )
         )
@@ -296,36 +366,58 @@ def _provider_request(
     model: str,
     system_prompt: str,
     user_prompt: str,
+    max_tokens: int | None,
     model_params: dict[str, Any],
+    reasoning_effort: str | None,
+    reasoning_budget_tokens: int | None,
     comment_id: int,
 ) -> dict[str, Any]:
     """Build one provider-specific request payload."""
 
     if provider_name == "openai":
+        body = {
+            **model_params,
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        if max_tokens is not None:
+            body["max_completion_tokens"] = max_tokens
+        if reasoning_effort:
+            body["reasoning_effort"] = reasoning_effort
         return {
             "custom_id": custom_id,
             "method": "POST",
             "url": "/v1/chat/completions",
-            "body": {
-                **model_params,
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            },
+            "body": body,
         }
     if provider_name == "anthropic":
+        params = {
+            **model_params,
+            "model": model,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_prompt}],
+        }
+        if max_tokens is not None:
+            params["max_tokens"] = max_tokens
+        if reasoning_budget_tokens is not None:
+            params["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": reasoning_budget_tokens,
+            }
         return {
             "custom_id": custom_id,
-            "params": {
-                **model_params,
-                "model": model,
-                "system": system_prompt,
-                "messages": [{"role": "user", "content": user_prompt}],
-            },
+            "params": params,
         }
     if provider_name == "google":
+        config = {
+            **model_params,
+            "system_instruction": system_prompt,
+        }
+        if max_tokens is not None:
+            config["max_output_tokens"] = max_tokens
         return {
             "model": model,
             "contents": user_prompt,
@@ -333,10 +425,7 @@ def _provider_request(
                 "custom_id": custom_id,
                 "comment_id": str(comment_id),
             },
-            "config": {
-                **model_params,
-                "system_instruction": system_prompt,
-            },
+            "config": config,
         }
     raise ValueError(f"Unsupported provider: {provider_name}")
 
@@ -348,50 +437,48 @@ def _create_provider_batch(
 ) -> Any:
     """Submit the prepared requests to the configured provider."""
 
-    if config.provider.name == "openai":
+    if config.model.provider == "openai":
         client = OpenAI(api_key=_provider_api_key(config))
         with provider_requests_path.open("rb") as handle:
             input_file = client.files.create(file=handle, purpose="batch")
-        completion_window = str(config.provider.batch_params.get("completion_window", "24h"))
         return client.batches.create(
-            completion_window=completion_window,
+            completion_window="24h",
             endpoint="/v1/chat/completions",
             input_file_id=input_file.id,
             metadata={"job_name": config.name},
         )
-    if config.provider.name == "anthropic":
+    if config.model.provider == "anthropic":
         client = Anthropic(api_key=_provider_api_key(config))
         return client.messages.batches.create(requests=provider_requests)
-    if config.provider.name == "google":
+    if config.model.provider == "google":
         client = genai.Client(api_key=_provider_api_key(config))
-        batch_config = config.provider.batch_params or {"display_name": config.name}
         return client.batches.create(
-            model=config.provider.model,
+            model=config.model.name,
             src=provider_requests,
-            config=batch_config,
+            config={"display_name": config.name},
         )
-    raise ValueError(f"Unsupported provider: {config.provider.name}")
+    raise ValueError(f"Unsupported provider: {config.model.provider}")
 
 
 def _retrieve_provider_batch(config: ModelBatchConfig, batch_id: str) -> Any:
     """Fetch the latest provider-side status for an existing batch."""
 
-    if config.provider.name == "openai":
+    if config.model.provider == "openai":
         client = OpenAI(api_key=_provider_api_key(config))
         return client.batches.retrieve(batch_id)
-    if config.provider.name == "anthropic":
+    if config.model.provider == "anthropic":
         client = Anthropic(api_key=_provider_api_key(config))
         return client.messages.batches.retrieve(batch_id)
-    if config.provider.name == "google":
+    if config.model.provider == "google":
         client = genai.Client(api_key=_provider_api_key(config))
         return client.batches.get(name=batch_id)
-    raise ValueError(f"Unsupported provider: {config.provider.name}")
+    raise ValueError(f"Unsupported provider: {config.model.provider}")
 
 
 def _download_provider_results(config: ModelBatchConfig, batch_object: Any) -> list[dict[str, Any]]:
     """Download provider results and convert them into JSON-serializable entries."""
 
-    if config.provider.name == "openai":
+    if config.model.provider == "openai":
         client = OpenAI(api_key=_provider_api_key(config))
         output_file_id = getattr(batch_object, "output_file_id", None)
         if output_file_id is None:
@@ -399,17 +486,17 @@ def _download_provider_results(config: ModelBatchConfig, batch_object: Any) -> l
         raw_text = client.files.content(output_file_id).text
         return [json.loads(line) for line in raw_text.splitlines() if line.strip()]
 
-    if config.provider.name == "anthropic":
+    if config.model.provider == "anthropic":
         client = Anthropic(api_key=_provider_api_key(config))
         return [_to_jsonable(entry) for entry in client.messages.batches.results(batch_object.id)]
 
-    if config.provider.name == "google":
+    if config.model.provider == "google":
         responses = getattr(getattr(batch_object, "dest", None), "inlined_responses", None)
         if responses is None:
             raise ValueError("Google batch completed without inline responses")
         return [_to_jsonable(entry) for entry in responses]
 
-    raise ValueError(f"Unsupported provider: {config.provider.name}")
+    raise ValueError(f"Unsupported provider: {config.model.provider}")
 
 
 def _result_extractor(
@@ -536,20 +623,21 @@ def _parse_response_json(response_text: str) -> dict[str, Any]:
 def _provider_api_key(config: ModelBatchConfig) -> str:
     """Read the provider API key from the configured environment variable."""
 
-    api_key = os.environ.get(config.provider.api_key_env)
+    api_key_env = PROVIDER_API_ENV_VARS.get(config.model.provider)
+    if api_key_env is None:
+        raise ValueError(f"Unsupported provider: {config.model.provider}")
+    api_key = os.environ.get(api_key_env)
     if not api_key:
-        raise ValueError(
-            f"Missing API key in environment variable {config.provider.api_key_env}"
-        )
+        raise ValueError(f"Missing API key in environment variable {api_key_env}")
     return api_key
 
 
 def _judge_id(config: ModelBatchConfig) -> str:
     """Return the identifier used for processed model rows."""
 
-    if config.provider.judge_id:
-        return config.provider.judge_id
-    return f"{config.provider.name}:{config.provider.model}"
+    if config.model.id:
+        return config.model.id
+    return f"{config.model.provider}:{config.model.name}"
 
 
 def _batch_identifier(provider_name: str, batch_object: Any) -> str:

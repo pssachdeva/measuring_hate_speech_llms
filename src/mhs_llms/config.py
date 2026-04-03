@@ -8,13 +8,6 @@ import yaml
 
 
 @dataclass(frozen=True)
-class DatasetConfig:
-    name: str
-    split: str = "train"
-    config_name: Optional[str] = None
-
-
-@dataclass(frozen=True)
 class OutputConfig:
     run_dir: Path
     facets_run_dir: Path
@@ -40,7 +33,6 @@ class FacetsConfig:
 
 @dataclass(frozen=True)
 class HumanBaselineConfig:
-    dataset: DatasetConfig
     output: OutputConfig
     facets: FacetsConfig
 
@@ -52,23 +44,23 @@ class BatchPromptConfig:
 
 
 @dataclass(frozen=True)
-class BatchSelectionConfig:
-    comment_ids_path: Optional[Path] = None
-    limit: Optional[int] = None
+class BatchReasoningConfig:
+    effort: Optional[str] = None
+    budget_tokens: Optional[int] = None
 
 
 @dataclass(frozen=True)
-class BatchProviderConfig:
+class BatchModelConfig:
+    provider: str
     name: str
-    api_key_env: str
-    model: str
-    judge_id: Optional[str] = None
-    model_params: dict[str, Any] = field(default_factory=dict)
-    batch_params: dict[str, Any] = field(default_factory=dict)
+    id: Optional[str] = None
+    max_tokens: Optional[int] = None
+    params: dict[str, Any] = field(default_factory=dict)
+    reasoning: BatchReasoningConfig = field(default_factory=BatchReasoningConfig)
 
 
 @dataclass(frozen=True)
-class BatchOutputConfig:
+class BatchStorageConfig:
     run_dir: Path
     request_manifest_filename: str
     provider_requests_filename: str
@@ -82,11 +74,11 @@ class BatchOutputConfig:
 @dataclass(frozen=True)
 class ModelBatchConfig:
     name: str
-    dataset: DatasetConfig
     prompt: BatchPromptConfig
-    selection: BatchSelectionConfig
-    provider: BatchProviderConfig
-    output: BatchOutputConfig
+    model: BatchModelConfig
+    batches: BatchStorageConfig
+    subset: str = "reference_set"
+    limit: Optional[int] = None
 
 
 def _resolve_path(path_value: Union[str, Path], base_dir: Path) -> Path:
@@ -109,7 +101,6 @@ def load_human_baseline_config(config_path: Path) -> HumanBaselineConfig:
     data = yaml.safe_load(config_path.read_text())
     base_dir = config_path.parent.parent if config_path.parent.name == "configs" else config_path.parent
 
-    dataset = DatasetConfig(**data["dataset"])
     output = OutputConfig(
         run_dir=_resolve_path(data["output"]["run_dir"], base_dir),
         facets_run_dir=_resolve_path(data["output"]["facets_run_dir"], base_dir),
@@ -131,7 +122,6 @@ def load_human_baseline_config(config_path: Path) -> HumanBaselineConfig:
         csv=str(data["facets"].get("csv", "Tab")),
     )
     return HumanBaselineConfig(
-        dataset=dataset,
         output=output,
         facets=facets,
     )
@@ -144,54 +134,56 @@ def load_model_batch_config(config_path: Path) -> ModelBatchConfig:
     data = yaml.safe_load(config_path.read_text())
     base_dir = config_path.parent.parent if config_path.parent.name == "configs" else config_path.parent
 
-    dataset_data = data["dataset"].copy()
-    comment_ids_path = dataset_data.pop("comment_ids_path", None)
-    limit = dataset_data.pop("limit", None)
-    dataset = DatasetConfig(**dataset_data)
-
     prompt = BatchPromptConfig(
         system_prompt_path=_resolve_path(data["prompt"]["system_prompt_path"], base_dir),
-        user_prompt_template=str(
-            data["prompt"].get("user_prompt_template", "SOCIAL MEDIA COMMENT:\n{comment_text}")
+        user_prompt_template=str(data["prompt"].get("user_prompt_template", "")),
+    )
+    model = BatchModelConfig(
+        provider=str(data["model"]["provider"]).lower(),
+        name=str(data["model"]["name"]),
+        id=str(data["model"].get("id")) if data["model"].get("id") else None,
+        max_tokens=(
+            int(data["model"]["max_tokens"]) if data["model"].get("max_tokens") is not None else None
+        ),
+        params=dict(data["model"].get("params", {})),
+        reasoning=BatchReasoningConfig(
+            effort=(
+                str(data["model"].get("reasoning", {}).get("effort"))
+                if data["model"].get("reasoning", {}).get("effort")
+                else None
+            ),
+            budget_tokens=(
+                int(data["model"].get("reasoning", {}).get("budget_tokens"))
+                if data["model"].get("reasoning", {}).get("budget_tokens") is not None
+                else None
+            ),
         ),
     )
-    selection = BatchSelectionConfig(
-        comment_ids_path=_resolve_path(comment_ids_path, base_dir) if comment_ids_path else None,
-        limit=int(limit) if limit is not None else None,
-    )
-    provider = BatchProviderConfig(
-        name=str(data["provider"]["name"]).lower(),
-        api_key_env=str(data["provider"]["api_key_env"]),
-        model=str(data["provider"]["model"]),
-        judge_id=str(data["provider"].get("judge_id")) if data["provider"].get("judge_id") else None,
-        model_params=dict(data["provider"].get("model_params", {})),
-        batch_params=dict(data["provider"].get("batch_params", {})),
-    )
-    output = BatchOutputConfig(
-        run_dir=_resolve_path(data["output"]["run_dir"], base_dir),
+    batches = BatchStorageConfig(
+        run_dir=_resolve_path(data["batches"]["run_dir"], base_dir),
         request_manifest_filename=str(
-            data["output"].get("request_manifest_filename", "request_manifest.jsonl")
+            data["batches"].get("request_manifest_filename", "request_manifest.jsonl")
         ),
         provider_requests_filename=str(
-            data["output"].get("provider_requests_filename", "provider_requests.jsonl")
+            data["batches"].get("provider_requests_filename", "provider_requests.jsonl")
         ),
         batch_metadata_filename=str(
-            data["output"].get("batch_metadata_filename", "batch_job.json")
+            data["batches"].get("batch_metadata_filename", "batch_job.json")
         ),
-        raw_results_filename=str(data["output"].get("raw_results_filename", "raw_results.jsonl")),
+        raw_results_filename=str(data["batches"].get("raw_results_filename", "raw_results.jsonl")),
         processed_records_filename=str(
-            data["output"].get("processed_records_filename", "processed_records.jsonl")
+            data["batches"].get("processed_records_filename", "processed_records.jsonl")
         ),
         processed_csv_filename=str(
-            data["output"].get("processed_csv_filename", "processed_records.csv")
+            data["batches"].get("processed_csv_filename", "processed_records.csv")
         ),
-        errors_filename=str(data["output"].get("errors_filename", "processing_errors.jsonl")),
+        errors_filename=str(data["batches"].get("errors_filename", "processing_errors.jsonl")),
     )
     return ModelBatchConfig(
         name=str(data["name"]),
-        dataset=dataset,
+        subset=str(data.get("subset", "reference_set")),
+        limit=int(data["limit"]) if data.get("limit") is not None else None,
         prompt=prompt,
-        selection=selection,
-        provider=provider,
-        output=output,
+        model=model,
+        batches=batches,
     )

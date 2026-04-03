@@ -222,19 +222,24 @@ def normalize_model_annotation(
     return record
 
 
-def annotation_record_to_row(record: MHSAnnotationRecord) -> dict[str, Any]:
+def annotation_record_to_row(
+    record: MHSAnnotationRecord,
+    include_metadata: bool = False,
+) -> dict[str, Any]:
     """Convert a validated annotation record into a flat row for storage."""
 
     row: dict[str, Any] = {
         "comment_id": record.comment_id,
         "judge_id": record.judge_id,
-        "source_type": record.source_type,
+        "provider": str(record.metadata.get("provider", "")),
+        "model": str(record.metadata.get("model", "")),
         "text": record.text,
         "target_groups": json.dumps(record.target_groups),
     }
     for item_name in ITEM_NAMES:
         row[item_name] = getattr(record, item_name)
-    row["metadata"] = json.dumps(record.metadata, sort_keys=True)
+    if include_metadata:
+        row["metadata"] = json.dumps(record.metadata, sort_keys=True)
     return row
 
 

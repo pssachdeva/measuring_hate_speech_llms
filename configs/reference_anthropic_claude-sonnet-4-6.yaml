@@ -1,0 +1,20 @@
+name: reference_anthropic_claude-sonnet-4-6
+description: |
+  Initial experiment on Claude 4.6 Sonnet using the reference set in MHS corpus.
+
+subset: reference_set
+limit: 25
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+  id: reference_anthropic_claude-sonnet-4-6
+  max_tokens: 2000
+  reasoning:
+    budget_tokens: 1024
+
+batches:
+  run_dir: batches/reference_anthropic_claude-sonnet-4-6

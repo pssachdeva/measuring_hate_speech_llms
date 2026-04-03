@@ -46,7 +46,7 @@ def build_comment_frame(
     comments["comment_id"] = comments["comment_id"].astype(int)
 
     if comment_ids is not None:
-        comment_order = pd.Index(comment_ids)
+        comment_order = pd.Index(comment_ids, name="comment_id")
         comments = comments.set_index("comment_id").reindex(comment_order).dropna(subset=["text"]).reset_index()
     else:
         comments = comments.sort_values("comment_id", kind="stable").reset_index(drop=True)
