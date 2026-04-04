@@ -72,6 +72,30 @@ def parse_facets_score_file(score_path: Path) -> pd.DataFrame:
     return dataframe
 
 
+def load_measure_anchors(
+    score_path: Path,
+    key_column: str,
+    measure_column: str = "measure",
+) -> dict[str, float]:
+    """Load a simple anchor mapping from a FACETS score export."""
+
+    dataframe = parse_facets_score_file(score_path)
+    return {
+        _normalize_anchor_key(row[key_column]): float(row[measure_column])
+        for _, row in dataframe[[key_column, measure_column]].iterrows()
+    }
+
+
+def _normalize_anchor_key(value: Any) -> str:
+    """Normalize parsed FACETS identifiers so integer ids stay integer-like."""
+
+    if isinstance(value, (int, str)):
+        return str(value)
+    if pd.notna(value) and float(value).is_integer():
+        return str(int(value))
+    return str(value)
+
+
 def extract_facets_run_summary(output_path: Path) -> dict[str, Any]:
     """Extract a small structured summary from the FACETS main output report."""
 

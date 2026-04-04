@@ -50,6 +50,11 @@ HF_VALUE_TO_PROMPT_LETTER = {
     "hate_speech": {0: "B", 1: "C", 2: "A"},
 }
 
+PROMPT_LETTER_TO_HF_VALUE = {
+    item_name: {letter: value for value, letter in value_to_letter.items()}
+    for item_name, value_to_letter in HF_VALUE_TO_PROMPT_LETTER.items()
+}
+
 TARGET_GROUP_COLUMNS = {
     "A": {
         "target_race_black": "Black or African American",
@@ -253,6 +258,16 @@ def _normalize_hf_item_value(item_name: str, value: Any) -> str:
         return HF_VALUE_TO_PROMPT_LETTER[item_name][integer_value]
     except KeyError as exc:
         raise ValueError(f"{item_name} has unsupported HF value: {value}") from exc
+
+
+def prompt_letter_to_hf_value(item_name: str, value: Any) -> int:
+    """Map one prompt-order response letter back into the human numeric coding."""
+
+    normalized_value = str(value).strip().upper()
+    try:
+        return PROMPT_LETTER_TO_HF_VALUE[item_name][normalized_value]
+    except KeyError as exc:
+        raise ValueError(f"{item_name} has unsupported prompt letter: {value}") from exc
 
 
 def normalize_human_annotation(row: pd.Series) -> MHSAnnotationRecord:

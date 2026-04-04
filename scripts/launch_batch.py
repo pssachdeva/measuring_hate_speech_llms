@@ -23,7 +23,7 @@ def main() -> None:
     parser.add_argument(
         "config_path",
         nargs="?",
-        default=str(REPO_ROOT / "configs" / "exp1_openai.yaml"),
+        default=str(REPO_ROOT / "configs" / "queries" / "reference_oai_gpt54_low.yaml"),
     )
     args = parser.parse_args()
 

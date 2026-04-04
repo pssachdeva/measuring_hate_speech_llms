@@ -1,0 +1,22 @@
+output:
+  run_dir: data/human_baseline
+  facets_run_dir: facets/human_baseline
+  comment_ids_filename: comment_ids.csv
+  cleaned_annotations_filename: human_annotations.csv
+  facets_data_filename: human_facets_data.tsv
+  facets_spec_filename: human_facets_spec.txt
+  facets_score_filename: human_facets_scores.txt
+  facets_output_filename: human_facets_output.txt
+
+facets:
+  title: MHS Human Baseline
+  model: "?, ?, #, R"
+  noncenter: 1
+  positive: 1
+  arrange: N
+  subset_detection: No
+  delements:
+    - 1N
+    - 2N
+    - 3N
+  csv: Tab

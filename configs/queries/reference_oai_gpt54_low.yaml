@@ -1,4 +1,4 @@
-name: exp1_openai
+name: openai_gpt-5.4_low
 description: |
   Initial experiment on OpenAI's GPT-5.4 using the reference set in MHS corpus
   with a small test limit.
@@ -11,10 +11,10 @@ prompt:
 model:
   provider: openai
   name: gpt-5.4
-  id: openai:gpt-5.4
+  id: openai_gpt-5.4_low
   max_tokens: 1000
   reasoning:
     effort: low
 
 batches:
-  run_dir: batches/exp1_openai
+  run_dir: batches/openai_gpt-5.4_low

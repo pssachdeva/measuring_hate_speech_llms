@@ -4,10 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mhs_llms.config import load_human_baseline_config
+from mhs_llms.constants import HUMAN_FACETS_RECODE_MAP
 from mhs_llms.dataset import load_mhs_dataframe
 from mhs_llms.facets import (
     build_facets_spec,
-    build_human_facets_frame,
+    build_facets_frame,
     write_facets_data,
     write_facets_spec,
 )
@@ -47,20 +48,10 @@ def run_human_baseline(config_path: Path) -> HumanBaselineOutputs:
     facets_run_dir.mkdir(parents=True, exist_ok=True)
 
     # Recode the numeric survey responses into the collapsed categories used for FACETS.
-    facets_annotations = recode_responses(
-        normalized_annotations,
-        insult={1: 0, 2: 1, 3: 2, 4: 3},
-        humiliate={1: 0, 2: 0, 3: 1, 4: 2},
-        status={1: 0, 2: 0, 3: 1, 4: 1},
-        dehumanize={1: 0, 2: 0, 3: 1, 4: 1},
-        violence={1: 0, 2: 0, 3: 1, 4: 1},
-        genocide={1: 0, 2: 0, 3: 1, 4: 1},
-        attack_defend={1: 0, 2: 1, 3: 2, 4: 3},
-        hate_speech={1: 0, 2: 1},
-    )
+    facets_annotations = recode_responses(normalized_annotations, **HUMAN_FACETS_RECODE_MAP)
 
     # Reshape the recoded annotations into FACETS input format and write the TSV.
-    facets_frame = build_human_facets_frame(facets_annotations)
+    facets_frame = build_facets_frame(facets_annotations)
     facets_data_path = facets_run_dir / config.output.facets_data_filename
     write_facets_data(facets_frame, facets_data_path)
 

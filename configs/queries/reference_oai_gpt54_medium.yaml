@@ -1,0 +1,20 @@
+name: openai_gpt-5.4_medium
+description: |
+  Initial experiment on OpenAI's GPT-5.4 using the reference set in MHS corpus
+  with a small test limit.
+
+subset: reference_set
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+model:
+  provider: openai
+  name: gpt-5.4
+  id: openai_gpt-5.4_medium
+  max_tokens: 5000
+  reasoning:
+    effort: medium
+
+batches:
+  run_dir: batches/openai_gpt-5.4_medium

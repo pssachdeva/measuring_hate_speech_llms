@@ -81,11 +81,28 @@ class ModelBatchConfig:
     limit: Optional[int] = None
 
 
-def _resolve_path(path_value: Union[str, Path], base_dir: Path) -> Path:
+@dataclass(frozen=True)
+class LLMFacetsConfig:
+    """Config for an LLM-only FACETS run anchored to the human baseline."""
+
+    annotation_paths: tuple[Path, ...]
+    comment_scores_path: Path
+    item_scores_path: Path
+    facets_run_dir: Path
+    facets_data_filename: str
+    facets_spec_filename: str
+    facets_score_filename: str
+    facets_output_filename: str
+    facets: FacetsConfig
+
+
+def _resolve_path(path_value: Union[str, Path]) -> Path:
+    """Resolve config paths from the current working directory."""
+
     path = Path(path_value)
     if path.is_absolute():
         return path
-    return (base_dir / path).resolve()
+    return (Path.cwd() / path).resolve()
 
 
 def _normalize_yes_no(value: object, default: str) -> str:
@@ -99,11 +116,10 @@ def _normalize_yes_no(value: object, default: str) -> str:
 def load_human_baseline_config(config_path: Path) -> HumanBaselineConfig:
     config_path = config_path.resolve()
     data = yaml.safe_load(config_path.read_text())
-    base_dir = config_path.parent.parent if config_path.parent.name == "configs" else config_path.parent
 
     output = OutputConfig(
-        run_dir=_resolve_path(data["output"]["run_dir"], base_dir),
-        facets_run_dir=_resolve_path(data["output"]["facets_run_dir"], base_dir),
+        run_dir=_resolve_path(data["output"]["run_dir"]),
+        facets_run_dir=_resolve_path(data["output"]["facets_run_dir"]),
         comment_ids_filename=data["output"]["comment_ids_filename"],
         cleaned_annotations_filename=data["output"]["cleaned_annotations_filename"],
         facets_data_filename=data["output"]["facets_data_filename"],
@@ -132,10 +148,9 @@ def load_model_batch_config(config_path: Path) -> ModelBatchConfig:
 
     config_path = config_path.resolve()
     data = yaml.safe_load(config_path.read_text())
-    base_dir = config_path.parent.parent if config_path.parent.name == "configs" else config_path.parent
 
     prompt = BatchPromptConfig(
-        system_prompt_path=_resolve_path(data["prompt"]["system_prompt_path"], base_dir),
+        system_prompt_path=_resolve_path(data["prompt"]["system_prompt_path"]),
         user_prompt_template=str(data["prompt"].get("user_prompt_template", "")),
     )
     model = BatchModelConfig(
@@ -160,7 +175,7 @@ def load_model_batch_config(config_path: Path) -> ModelBatchConfig:
         ),
     )
     batches = BatchStorageConfig(
-        run_dir=_resolve_path(data["batches"]["run_dir"], base_dir),
+        run_dir=_resolve_path(data["batches"]["run_dir"]),
         request_manifest_filename=str(
             data["batches"].get("request_manifest_filename", "request_manifest.jsonl")
         ),
@@ -186,4 +201,38 @@ def load_model_batch_config(config_path: Path) -> ModelBatchConfig:
         prompt=prompt,
         model=model,
         batches=batches,
+    )
+
+
+def load_llm_facets_config(config_path: Path) -> LLMFacetsConfig:
+    """Load the config for an LLM FACETS run linked to human anchors."""
+
+    config_path = config_path.resolve()
+    data = yaml.safe_load(config_path.read_text())
+
+    facets = FacetsConfig(
+        title=data["facets"]["title"],
+        model=data["facets"].get("model", "?, ?, #, R"),
+        noncenter=int(data["facets"].get("noncenter", 1)),
+        positive=int(data["facets"].get("positive", 1)),
+        arrange=str(data["facets"].get("arrange", "N")),
+        subset_detection=_normalize_yes_no(data["facets"].get("subset_detection"), "No"),
+        delements=tuple(data["facets"].get("delements", ["1N", "2N", "3N"])),
+        csv=str(data["facets"].get("csv", "Tab")),
+    )
+
+    annotation_values = data["annotations"].get("paths")
+    if annotation_values is None:
+        annotation_values = [data["annotations"]["path"]]
+
+    return LLMFacetsConfig(
+        annotation_paths=tuple(_resolve_path(path_value) for path_value in annotation_values),
+        comment_scores_path=_resolve_path(data["anchors"]["comment_scores_path"]),
+        item_scores_path=_resolve_path(data["anchors"]["item_scores_path"]),
+        facets_run_dir=_resolve_path(data["output"]["facets_run_dir"]),
+        facets_data_filename=str(data["output"].get("facets_data_filename", "llm_facets_data.tsv")),
+        facets_spec_filename=str(data["output"].get("facets_spec_filename", "llm_facets_spec.txt")),
+        facets_score_filename=str(data["output"].get("facets_score_filename", "llm_facets_scores.txt")),
+        facets_output_filename=str(data["output"].get("facets_output_filename", "llm_facets_output.txt")),
+        facets=facets,
     )
