@@ -7,6 +7,7 @@ from mhs_llms.schema import (
     normalize_human_annotation,
     normalize_human_annotations,
     normalize_model_annotation,
+    prompt_letter_to_hf_value,
 )
 
 
@@ -119,3 +120,9 @@ def test_normalize_model_annotation_validates_none_of_the_above_exclusivity() ->
             },
             metadata={},
         )
+
+
+def test_prompt_letter_to_hf_value_matches_human_coding() -> None:
+    assert prompt_letter_to_hf_value("sentiment", "A") == 4
+    assert prompt_letter_to_hf_value("insult", "E") == 4
+    assert prompt_letter_to_hf_value("hate_speech", "A") == 2

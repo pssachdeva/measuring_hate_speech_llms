@@ -1,6 +1,6 @@
 annotations:
   paths:
-    - data/reference_set.csv
+    - data/llm_reference.csv
 
 anchors:
   comment_scores_path: facets/human_baseline/human_facets_scores.1.txt
