@@ -3,9 +3,12 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.pyc
-
+*.jsonl
+*.json
+.DS_Store
 artifacts/*
 !artifacts/.gitkeep
-
+batches/*
 data/*
 !data/.gitkeep
+facets/*
