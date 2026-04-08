@@ -4,7 +4,7 @@ import sys
 
 from loguru import logger
 
-from mhs_llms.batch import launch_batch
+from mhs_llms.batch import launch_batches
 from mhs_llms.paths import REPO_ROOT
 
 
@@ -19,7 +19,9 @@ def _print_summary(title: str, rows: list[tuple[str, str]]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Launch a provider batch job for MHS comments.")
+    parser = argparse.ArgumentParser(
+        description="Launch one provider batch job per configured model for MHS comments."
+    )
     parser.add_argument(
         "config_path",
         nargs="?",
@@ -30,17 +32,19 @@ def main() -> None:
     logger.remove()
     logger.add(sys.stderr, level="INFO")
 
-    outputs = launch_batch(config_path=Path(args.config_path))
-    _print_summary(
-        "Batch Launched",
-        [
-            ("Config", str(Path(args.config_path).resolve())),
-            ("Run Dir", str(outputs.run_dir)),
-            ("Metadata", str(outputs.batch_metadata_path)),
-            ("Batch ID", outputs.batch_id),
-            ("Status", outputs.status),
-        ],
-    )
+    config_path = Path(args.config_path).resolve()
+    outputs = launch_batches(config_path=config_path)
+    for output in outputs:
+        _print_summary(
+            f"Batch Launched: {output.model_id}",
+            [
+                ("Config", str(config_path)),
+                ("Run Dir", str(output.run_dir)),
+                ("Metadata", str(output.batch_metadata_path)),
+                ("Batch ID", output.batch_id),
+                ("Status", output.status),
+            ],
+        )
 
 
 if __name__ == "__main__":

@@ -1,12 +1,23 @@
 from pathlib import Path
+import json
 
 import pandas as pd
 
-from mhs_llms.batch import _build_requests, _select_comment_ids, write_processed_annotations
+from mhs_llms.batch import (
+    _build_requests,
+    _create_provider_batch,
+    _download_provider_results,
+    _select_comment_ids,
+    _apply_google_batch_reasoning,
+    write_combined_processed_annotations,
+    write_processed_annotations,
+)
 from mhs_llms.batch import (
     _extract_anthropic_result,
     _extract_google_result,
     _extract_openai_result,
+    _extract_xai_result,
+    _batch_status,
     _parse_response_json,
 )
 from mhs_llms.config import (
@@ -79,7 +90,7 @@ def test_extract_anthropic_result_reads_text_blocks() -> None:
 
 def test_extract_google_result_reads_candidate_parts() -> None:
     entry = {
-        "metadata": {"custom_id": "comment-3", "comment_id": "3"},
+        "key": "comment-3",
         "response": {
             "candidates": [
                 {
@@ -100,6 +111,54 @@ def test_extract_google_result_reads_candidate_parts() -> None:
     assert custom_id == "comment-3"
     assert response_error is None
     assert '"target_groups":["D"]' in response_text
+
+
+def test_extract_google_result_reads_top_level_candidates() -> None:
+    entry = {
+        "key": "comment-9",
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "text": '{"target_groups":["I"],"sentiment":"C","respect":"C","insult":"A","humiliate":"A","status":"C","dehumanize":"A","violence":"A","genocide":"A","attack_defend":"C","hate_speech":"B"}'
+                        }
+                    ]
+                }
+            }
+        ],
+    }
+
+    custom_id, response_text, _, response_error = _extract_google_result(entry)
+
+    assert custom_id == "comment-9"
+    assert response_error is None
+    assert '"hate_speech":"B"' in response_text
+
+
+def test_extract_xai_result_reads_chat_completion_result() -> None:
+    entry = {
+        "batch_request_id": "comment-5",
+        "batch_result": {
+            "response": {
+                "chat_get_completion": {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"target_groups":["I"],"sentiment":"C","respect":"C","insult":"A","humiliate":"A","status":"C","dehumanize":"A","violence":"A","genocide":"A","attack_defend":"C","hate_speech":"B"}'
+                            }
+                        }
+                    ]
+                }
+            }
+        },
+    }
+
+    custom_id, response_text, _, response_error = _extract_xai_result(entry)
+
+    assert custom_id == "comment-5"
+    assert response_error is None
+    assert '"hate_speech":"B"' in response_text
 
 
 def test_build_requests_uses_raw_comment_when_user_prompt_template_is_empty() -> None:
@@ -185,6 +244,399 @@ def test_build_requests_for_anthropic_follow_openai_config_shape() -> None:
     }
 
 
+def test_build_requests_for_google_use_uploaded_batch_shape() -> None:
+    config = ModelBatchConfig(
+        name="test-google",
+        subset="reference_set",
+        limit=1,
+        prompt=BatchPromptConfig(
+            system_prompt_path=Path("prompts/mhs_survey_v1.txt"),
+            user_prompt_template="",
+        ),
+        model=BatchModelConfig(
+            provider="google",
+            name="gemini-2.5-pro",
+            id="google:gemini-2.5-pro",
+            max_tokens=256,
+            params={"temperature": 0},
+            reasoning=BatchReasoningConfig(budget_tokens=64),
+        ),
+        batches=BatchStorageConfig(
+            run_dir=Path("batches/test-google"),
+            request_manifest_filename="request_manifest.jsonl",
+            provider_requests_filename="provider_requests.jsonl",
+            batch_metadata_filename="batch_job.json",
+            raw_results_filename="raw_results.jsonl",
+            processed_records_filename="processed_records.jsonl",
+            processed_csv_filename="processed_records.csv",
+            errors_filename="processing_errors.jsonl",
+        ),
+    )
+
+    _, provider_requests = _build_requests(
+        config=config,
+        comments=[{"comment_id": 1, "text": "just the comment"}],
+    )
+
+    assert provider_requests[0]["key"] == "comment-1"
+    assert provider_requests[0]["request"]["contents"][0]["parts"][0]["text"] == "just the comment"
+    assert (
+        provider_requests[0]["request"]["system_instruction"]["parts"][0]["text"]
+        == Path("prompts/mhs_survey_v1.txt").read_text()
+    )
+    assert provider_requests[0]["request"]["generation_config"]["max_output_tokens"] == 256
+    assert provider_requests[0]["request"]["generation_config"]["thinking_config"] == {
+        "thinking_budget": 64
+    }
+
+
+def test_build_requests_for_xai_follow_native_batch_shape() -> None:
+    config = ModelBatchConfig(
+        name="test-xai",
+        subset="reference_set",
+        limit=1,
+        prompt=BatchPromptConfig(
+            system_prompt_path=Path("prompts/mhs_survey_v1.txt"),
+            user_prompt_template="",
+        ),
+        model=BatchModelConfig(
+            provider="xai",
+            name="grok-4-fast-reasoning",
+            id="xai:grok-4-fast-reasoning",
+            max_tokens=256,
+            params={},
+            reasoning=BatchReasoningConfig(effort="low"),
+        ),
+        batches=BatchStorageConfig(
+            run_dir=Path("batches/test-xai"),
+            request_manifest_filename="request_manifest.jsonl",
+            provider_requests_filename="provider_requests.jsonl",
+            batch_metadata_filename="batch_job.json",
+            raw_results_filename="raw_results.jsonl",
+            processed_records_filename="processed_records.jsonl",
+            processed_csv_filename="processed_records.csv",
+            errors_filename="processing_errors.jsonl",
+        ),
+    )
+
+    _, provider_requests = _build_requests(
+        config=config,
+        comments=[{"comment_id": 1, "text": "just the comment"}],
+    )
+
+    assert provider_requests[0]["batch_request_id"] == "comment-1"
+    chat_request = provider_requests[0]["batch_request"]["chat_get_completion"]
+    assert chat_request["model"] == "grok-4-fast-reasoning"
+    assert chat_request["messages"][1]["content"] == "just the comment"
+    assert chat_request["max_tokens"] == 256
+    assert chat_request["reasoning_effort"] == "low"
+
+
+def test_apply_google_batch_reasoning_maps_low_effort_to_budget() -> None:
+    payload = _apply_google_batch_reasoning(
+        generation_config={"max_output_tokens": 80},
+        reasoning_effort="low",
+        reasoning_budget_tokens=None,
+    )
+
+    assert payload["max_output_tokens"] == 80
+    assert payload["thinking_config"]["thinking_budget"] == 128
+
+
+def test_apply_google_batch_reasoning_rejects_effort_and_budget_together() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="cannot set both"):
+        _apply_google_batch_reasoning(
+            generation_config={},
+            reasoning_effort="low",
+            reasoning_budget_tokens=64,
+        )
+
+
+def test_create_google_batch_uploads_jsonl_and_uses_uploaded_file_name(
+    tmp_path: Path, monkeypatch
+) -> None:
+    provider_requests_path = tmp_path / "provider_requests.jsonl"
+    provider_requests_path.write_text(json.dumps({"key": "comment-1", "request": {}}) + "\n")
+
+    config = ModelBatchConfig(
+        name="test-google",
+        subset="reference_set",
+        limit=1,
+        prompt=BatchPromptConfig(
+            system_prompt_path=Path("prompts/mhs_survey_v1.txt"),
+            user_prompt_template="",
+        ),
+        model=BatchModelConfig(
+            provider="google",
+            name="gemini-2.5-pro",
+            id="google:gemini-2.5-pro",
+            max_tokens=256,
+            params={},
+            reasoning=BatchReasoningConfig(),
+        ),
+        batches=BatchStorageConfig(
+            run_dir=tmp_path / "batches",
+            request_manifest_filename="request_manifest.jsonl",
+            provider_requests_filename="provider_requests.jsonl",
+            batch_metadata_filename="batch_job.json",
+            raw_results_filename="raw_results.jsonl",
+            processed_records_filename="processed_records.jsonl",
+            processed_csv_filename="processed_records.csv",
+            errors_filename="processing_errors.jsonl",
+        ),
+    )
+
+    upload_calls: list[tuple[str, object]] = []
+    create_calls: list[tuple[str, str, object]] = []
+
+    class DummyUpload:
+        name = "files/upload-123"
+
+    class DummyState:
+        name = "JOB_STATE_RUNNING"
+
+    class DummyBatch:
+        name = "batches/123"
+        state = DummyState()
+
+    class DummyFiles:
+        def upload(self, file, config):
+            upload_calls.append((file, config))
+            return DummyUpload()
+
+    class DummyBatches:
+        def create(self, model, src, config):
+            create_calls.append((model, src, config))
+            return DummyBatch()
+
+    class DummyClient:
+        def __init__(self, api_key):
+            self.files = DummyFiles()
+            self.batches = DummyBatches()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr("mhs_llms.batch.genai.Client", DummyClient)
+
+    batch = _create_provider_batch(
+        config=config,
+        provider_requests_path=provider_requests_path,
+        provider_requests=[{"key": "comment-1", "request": {}}],
+    )
+
+    assert batch.name == "batches/123"
+    assert upload_calls[0][0] == str(provider_requests_path)
+    assert upload_calls[0][1].mime_type == "jsonl"
+    assert create_calls == [("gemini-2.5-pro", "files/upload-123", {"display_name": "test-google"})]
+
+
+def test_create_xai_batch_creates_batch_and_adds_requests(tmp_path: Path, monkeypatch) -> None:
+    provider_requests_path = tmp_path / "provider_requests.jsonl"
+    provider_requests_path.write_text(
+        json.dumps({"batch_request_id": "comment-1", "batch_request": {"chat_get_completion": {}}}) + "\n"
+    )
+
+    config = ModelBatchConfig(
+        name="test-xai",
+        subset="reference_set",
+        limit=1,
+        prompt=BatchPromptConfig(
+            system_prompt_path=Path("prompts/mhs_survey_v1.txt"),
+            user_prompt_template="",
+        ),
+        model=BatchModelConfig(
+            provider="xai",
+            name="grok-4-fast-reasoning",
+            id="xai:grok-4-fast-reasoning",
+            max_tokens=256,
+            params={},
+            reasoning=BatchReasoningConfig(),
+        ),
+        batches=BatchStorageConfig(
+            run_dir=tmp_path / "batches",
+            request_manifest_filename="request_manifest.jsonl",
+            provider_requests_filename="provider_requests.jsonl",
+            batch_metadata_filename="batch_job.json",
+            raw_results_filename="raw_results.jsonl",
+            processed_records_filename="processed_records.jsonl",
+            processed_csv_filename="processed_records.csv",
+            errors_filename="processing_errors.jsonl",
+        ),
+    )
+
+    calls: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def fake_xai_api_request(config, method, path, payload=None, query=None):
+        calls.append((method, path, payload))
+        if method == "POST" and path == "/v1/batches":
+            return {"batch_id": "batch-xai-123", "state": {"num_pending": 0, "num_error": 0, "num_cancelled": 0}}
+        if method == "POST" and path == "/v1/batches/batch-xai-123/requests":
+            return {"added": 1}
+        if method == "GET" and path == "/v1/batches/batch-xai-123":
+            return {"batch_id": "batch-xai-123", "state": {"num_pending": 1, "num_error": 0, "num_cancelled": 0}}
+        raise AssertionError(f"Unexpected xAI call: {(method, path)}")
+
+    monkeypatch.setattr("mhs_llms.batch._xai_api_request", fake_xai_api_request)
+
+    batch = _create_provider_batch(
+        config=config,
+        provider_requests_path=provider_requests_path,
+        provider_requests=[{"batch_request_id": "comment-1", "batch_request": {"chat_get_completion": {}}}],
+    )
+
+    assert batch["batch_id"] == "batch-xai-123"
+    assert calls == [
+        ("POST", "/v1/batches", {"name": "test-xai"}),
+        (
+            "POST",
+            "/v1/batches/batch-xai-123/requests",
+            {"batch_requests": [{"batch_request_id": "comment-1", "batch_request": {"chat_get_completion": {}}}]},
+        ),
+        ("GET", "/v1/batches/batch-xai-123", None),
+    ]
+
+
+def test_download_provider_results_reads_google_output_file(monkeypatch, tmp_path: Path) -> None:
+    config = ModelBatchConfig(
+        name="test-google",
+        subset="reference_set",
+        limit=1,
+        prompt=BatchPromptConfig(
+            system_prompt_path=Path("prompts/mhs_survey_v1.txt"),
+            user_prompt_template="",
+        ),
+        model=BatchModelConfig(
+            provider="google",
+            name="gemini-2.5-pro",
+            id="google:gemini-2.5-pro",
+            max_tokens=256,
+            params={},
+            reasoning=BatchReasoningConfig(),
+        ),
+        batches=BatchStorageConfig(
+            run_dir=tmp_path / "batches",
+            request_manifest_filename="request_manifest.jsonl",
+            provider_requests_filename="provider_requests.jsonl",
+            batch_metadata_filename="batch_job.json",
+            raw_results_filename="raw_results.jsonl",
+            processed_records_filename="processed_records.jsonl",
+            processed_csv_filename="processed_records.csv",
+            errors_filename="processing_errors.jsonl",
+        ),
+    )
+
+    class DummyDest:
+        file_name = "files/result-123"
+
+    class DummyBatch:
+        dest = DummyDest()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "mhs_llms.batch._download_google_batch_output",
+        lambda file_name, api_key: (
+            json.dumps(
+                {
+                    "key": "comment-1",
+                    "response": {
+                        "candidates": [{"content": {"parts": [{"text": '{"hate_speech":"B"}'}]}}]
+                    },
+                }
+            )
+            + "\n"
+        ).encode("utf-8"),
+    )
+
+    rows = _download_provider_results(config=config, batch_object=DummyBatch())
+
+    assert rows[0]["key"] == "comment-1"
+    assert rows[0]["response"]["candidates"][0]["content"]["parts"][0]["text"] == '{"hate_speech":"B"}'
+
+
+def test_download_provider_results_reads_paginated_xai_results(monkeypatch, tmp_path: Path) -> None:
+    config = ModelBatchConfig(
+        name="test-xai",
+        subset="reference_set",
+        limit=1,
+        prompt=BatchPromptConfig(
+            system_prompt_path=Path("prompts/mhs_survey_v1.txt"),
+            user_prompt_template="",
+        ),
+        model=BatchModelConfig(
+            provider="xai",
+            name="grok-4-fast-reasoning",
+            id="xai:grok-4-fast-reasoning",
+            max_tokens=256,
+            params={},
+            reasoning=BatchReasoningConfig(),
+        ),
+        batches=BatchStorageConfig(
+            run_dir=tmp_path / "batches",
+            request_manifest_filename="request_manifest.jsonl",
+            provider_requests_filename="provider_requests.jsonl",
+            batch_metadata_filename="batch_job.json",
+            raw_results_filename="raw_results.jsonl",
+            processed_records_filename="processed_records.jsonl",
+            processed_csv_filename="processed_records.csv",
+            errors_filename="processing_errors.jsonl",
+        ),
+    )
+
+    calls: list[dict[str, object] | None] = []
+
+    def fake_xai_api_request(config, method, path, payload=None, query=None):
+        calls.append(query)
+        if query is None or query.get("pagination_token") is None:
+            return {
+                "results": [{"batch_request_id": "comment-1"}],
+                "pagination_token": "next-page",
+            }
+        return {
+            "results": [{"batch_request_id": "comment-2"}],
+            "pagination_token": None,
+        }
+
+    monkeypatch.setattr("mhs_llms.batch._xai_api_request", fake_xai_api_request)
+
+    rows = _download_provider_results(
+        config=config,
+        batch_object={"batch_id": "batch-xai-123"},
+    )
+
+    assert [row["batch_request_id"] for row in rows] == ["comment-1", "comment-2"]
+    assert calls == [
+        {"page_size": 1000, "pagination_token": None},
+        {"page_size": 1000, "pagination_token": "next-page"},
+    ]
+
+
+def test_batch_status_prefers_google_state_name() -> None:
+    class DummyState:
+        name = "BATCH_STATE_SUCCEEDED"
+        value = "JOB_STATE_SUCCEEDED"
+
+    class DummyBatch:
+        state = DummyState()
+
+    assert _batch_status("google", DummyBatch()) == "BATCH_STATE_SUCCEEDED"
+
+
+def test_batch_status_maps_xai_state_counters() -> None:
+    assert _batch_status(
+        "xai",
+        {"state": {"num_pending": 1, "num_error": 0, "num_cancelled": 0}},
+    ) == "in_progress"
+    assert _batch_status(
+        "xai",
+        {"state": {"num_pending": 0, "num_error": 0, "num_cancelled": 0}},
+    ) == "completed"
+    assert _batch_status(
+        "xai",
+        {"state": {"num_pending": 0, "num_error": 2, "num_cancelled": 0}},
+    ) == "completed_with_errors"
+
+
 def test_select_comment_ids_reference_set_is_in_code_and_sorted() -> None:
     dataframe = pd.DataFrame(
         [
@@ -213,7 +665,7 @@ def test_select_comment_ids_all_comments_ignores_platform_filter() -> None:
     assert comment_ids == [10, 20]
 
 
-def test_write_processed_annotations_creates_and_appends_csv(tmp_path: Path) -> None:
+def test_write_processed_annotations_rewrites_csv_without_duplicates(tmp_path: Path) -> None:
     processed_csv = tmp_path / "processed.csv"
     processed_jsonl = tmp_path / "processed.jsonl"
     output_csv = tmp_path / "aggregate.csv"
@@ -233,10 +685,10 @@ def test_write_processed_annotations_creates_and_appends_csv(tmp_path: Path) -> 
     write_processed_annotations(processed_jsonl, processed_csv, output_csv)
 
     aggregated = pd.read_csv(output_csv)
-    assert aggregated["comment_id"].tolist() == [1, 2, 1, 2]
+    assert aggregated["comment_id"].tolist() == [1, 2]
 
 
-def test_write_processed_annotations_appends_jsonl(tmp_path: Path) -> None:
+def test_write_processed_annotations_rewrites_jsonl_without_duplicates(tmp_path: Path) -> None:
     processed_csv = tmp_path / "processed.csv"
     processed_jsonl = tmp_path / "processed.jsonl"
     output_jsonl = tmp_path / "aggregate.jsonl"
@@ -250,7 +702,37 @@ def test_write_processed_annotations_appends_jsonl(tmp_path: Path) -> None:
     write_processed_annotations(processed_jsonl, processed_csv, output_jsonl)
 
     lines = output_jsonl.read_text().splitlines()
-    assert len(lines) == 2
+    assert len(lines) == 1
+
+
+def test_write_combined_processed_annotations_combines_multiple_models_into_one_csv(
+    tmp_path: Path,
+) -> None:
+    processed_csv_one = tmp_path / "processed_one.csv"
+    processed_jsonl_one = tmp_path / "processed_one.jsonl"
+    processed_csv_two = tmp_path / "processed_two.csv"
+    processed_jsonl_two = tmp_path / "processed_two.jsonl"
+    output_csv = tmp_path / "aggregate.csv"
+
+    pd.DataFrame([{"comment_id": 1, "judge_id": "model-one", "hate_speech": "B"}]).to_csv(
+        processed_csv_one, index=False
+    )
+    processed_jsonl_one.write_text('{"comment_id": 1, "judge_id": "model-one", "hate_speech": "B"}\n')
+    pd.DataFrame([{"comment_id": 1, "judge_id": "model-two", "hate_speech": "A"}]).to_csv(
+        processed_csv_two, index=False
+    )
+    processed_jsonl_two.write_text('{"comment_id": 1, "judge_id": "model-two", "hate_speech": "A"}\n')
+
+    write_combined_processed_annotations(
+        processed_paths=[
+            (processed_jsonl_one, processed_csv_one),
+            (processed_jsonl_two, processed_csv_two),
+        ],
+        output_path=output_csv,
+    )
+
+    aggregated = pd.read_csv(output_csv)
+    assert aggregated["judge_id"].tolist() == ["model-one", "model-two"]
 
 
 def test_annotation_record_to_row_uses_provider_model_order_without_metadata_by_default() -> None:

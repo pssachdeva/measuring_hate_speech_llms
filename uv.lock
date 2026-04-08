@@ -1206,6 +1206,7 @@ dependencies = [
     { name = "google-genai" },
     { name = "loguru" },
     { name = "matplotlib" },
+    { name = "mpl-lego" },
     { name = "openai" },
     { name = "pandas" },
     { name = "pyyaml" },
@@ -1224,6 +1225,7 @@ requires-dist = [
     { name = "google-genai", specifier = ">=1.70.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "matplotlib", specifier = ">=3.10.8" },
+    { name = "mpl-lego", editable = "../mpl-lego" },
     { name = "openai", specifier = ">=2.30.0" },
     { name = "pandas", specifier = ">=2.2.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
@@ -1234,6 +1236,11 @@ dev = [
     { name = "pytest", specifier = ">=8.4.0" },
     { name = "ruff", specifier = ">=0.12.0" },
 ]
+
+[[package]]
+name = "mpl-lego"
+version = "0.0.2"
+source = { editable = "../mpl-lego" }
 
 [[package]]
 name = "multidict"

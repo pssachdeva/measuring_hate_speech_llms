@@ -6,6 +6,9 @@ import json
 import os
 from pathlib import Path
 from typing import Any, Callable, Iterable
+from urllib import error as urllib_error
+from urllib import parse as urllib_parse
+from urllib import request as urllib_request
 
 from anthropic import Anthropic
 from google import genai
@@ -13,7 +16,7 @@ from loguru import logger
 from openai import OpenAI
 import pandas as pd
 
-from mhs_llms.config import ModelBatchConfig, load_model_batch_config
+from mhs_llms.config import ModelBatchConfig, load_model_batch_config, load_model_batch_configs
 from mhs_llms.constants import REFERENCE_SET_PLATFORM
 from mhs_llms.dataset import build_comment_frame, load_mhs_dataframe
 from mhs_llms.schema import annotation_record_to_row, normalize_model_annotation
@@ -28,26 +31,40 @@ TERMINAL_BATCH_STATUSES = {
         "JOB_STATE_FAILED",
         "JOB_STATE_CANCELLED",
         "JOB_STATE_EXPIRED",
+        "BATCH_STATE_SUCCEEDED",
+        "BATCH_STATE_FAILED",
+        "BATCH_STATE_CANCELLED",
+        "BATCH_STATE_EXPIRED",
     },
+    "xai": {"completed", "completed_with_errors"},
 }
 
 SUCCESSFUL_RESULT_STATUSES = {
     "openai": {"completed"},
     "anthropic": {"ended"},
-    "google": {"JOB_STATE_SUCCEEDED", "JOB_STATE_PARTIALLY_SUCCEEDED"},
+    "google": {
+        "JOB_STATE_SUCCEEDED",
+        "JOB_STATE_PARTIALLY_SUCCEEDED",
+        "BATCH_STATE_SUCCEEDED",
+    },
+    "xai": {"completed", "completed_with_errors"},
 }
 
 PROVIDER_API_ENV_VARS = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "google": "GEMINI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
 }
+
+XAI_API_BASE_URL = "https://api.x.ai"
 
 
 @dataclass(frozen=True)
 class LaunchBatchOutputs:
     """Paths and ids created when a provider batch job is launched."""
 
+    model_id: str
     run_dir: Path
     batch_metadata_path: Path
     batch_id: str
@@ -58,6 +75,7 @@ class LaunchBatchOutputs:
 class ProcessBatchOutputs:
     """Paths and status emitted when processing a provider batch job."""
 
+    model_id: str
     run_dir: Path
     batch_metadata_path: Path
     status: str
@@ -66,10 +84,26 @@ class ProcessBatchOutputs:
     processed_csv_path: Path | None
 
 
+@dataclass(frozen=True)
+class ProcessBatchesOutputs:
+    """Summarize one processing pass across every configured model batch."""
+
+    outputs: tuple[ProcessBatchOutputs, ...]
+    combined_output_path: Path | None
+    all_terminal: bool
+    all_successful: bool
+
+
 def launch_batch(config_path: Path) -> LaunchBatchOutputs:
     """Create a provider batch job from the configured MHS comment slice."""
 
     config = load_model_batch_config(config_path)
+    return launch_batch_for_config(config=config, config_path=config_path)
+
+
+def launch_batch_for_config(config: ModelBatchConfig, config_path: Path | None = None) -> LaunchBatchOutputs:
+    """Create a provider batch job for one already-resolved model config."""
+
     run_dir = config.batches.run_dir
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -94,11 +128,17 @@ def launch_batch(config_path: Path) -> LaunchBatchOutputs:
     status = _batch_status(config.model.provider, batch_object)
 
     metadata = {
-        "config_path": str(config_path.resolve()),
+        "config_path": str(config_path.resolve()) if config_path is not None else None,
         "name": config.name,
+        "model_id": _model_id(config),
         "provider": config.model.provider,
         "model": config.model.name,
         "judge_id": _judge_id(config),
+        "reasoning": {
+            "effort": config.model.reasoning.effort,
+            "budget_tokens": config.model.reasoning.budget_tokens,
+        },
+        "model_params": config.model.params,
         "batch_id": batch_id,
         "status": status,
         "subset": config.subset,
@@ -110,6 +150,7 @@ def launch_batch(config_path: Path) -> LaunchBatchOutputs:
     logger.info("Launched {} batch {} with status {}", config.model.provider, batch_id, status)
 
     return LaunchBatchOutputs(
+        model_id=_model_id(config),
         run_dir=run_dir,
         batch_metadata_path=batch_metadata_path,
         batch_id=batch_id,
@@ -121,6 +162,20 @@ def process_batch(config_path: Path, include_all_cols: bool = False) -> ProcessB
     """Refresh batch status and download/process results once complete."""
 
     config = load_model_batch_config(config_path)
+    return process_batch_for_config(
+        config=config,
+        include_all_cols=include_all_cols,
+        config_path=config_path,
+    )
+
+
+def process_batch_for_config(
+    config: ModelBatchConfig,
+    include_all_cols: bool = False,
+    config_path: Path | None = None,
+) -> ProcessBatchOutputs:
+    """Refresh one resolved batch status and process results once complete."""
+
     run_dir = config.batches.run_dir
     batch_metadata_path = run_dir / config.batches.batch_metadata_filename
     request_manifest_path = run_dir / config.batches.request_manifest_filename
@@ -144,6 +199,7 @@ def process_batch(config_path: Path, include_all_cols: bool = False) -> ProcessB
     if status not in TERMINAL_BATCH_STATUSES[config.model.provider]:
         logger.info("Batch {} is still running; no result download yet", batch_id)
         return ProcessBatchOutputs(
+            model_id=_model_id(config),
             run_dir=run_dir,
             batch_metadata_path=batch_metadata_path,
             status=status,
@@ -155,6 +211,7 @@ def process_batch(config_path: Path, include_all_cols: bool = False) -> ProcessB
     if status not in SUCCESSFUL_RESULT_STATUSES[config.model.provider]:
         logger.warning("Batch {} finished in terminal state {} with no downloadable results", batch_id, status)
         return ProcessBatchOutputs(
+            model_id=_model_id(config),
             run_dir=run_dir,
             batch_metadata_path=batch_metadata_path,
             status=status,
@@ -239,9 +296,12 @@ def process_batch(config_path: Path, include_all_cols: bool = False) -> ProcessB
     metadata["processed_at"] = _utcnow()
     metadata["processed_row_count"] = len(processed_rows)
     metadata["processing_error_count"] = len(processing_errors)
+    if config_path is not None:
+        metadata["config_path"] = str(config_path.resolve())
     _write_json(batch_metadata_path, metadata)
 
     return ProcessBatchOutputs(
+        model_id=_model_id(config),
         run_dir=run_dir,
         batch_metadata_path=batch_metadata_path,
         status=status,
@@ -251,32 +311,106 @@ def process_batch(config_path: Path, include_all_cols: bool = False) -> ProcessB
     )
 
 
+def launch_batches(config_path: Path) -> tuple[LaunchBatchOutputs, ...]:
+    """Launch one provider batch for each model declared in the shared config."""
+
+    config_path = config_path.resolve()
+    return tuple(
+        launch_batch_for_config(config=config, config_path=config_path)
+        for config in load_model_batch_configs(config_path)
+    )
+
+
+def process_batches(
+    config_path: Path,
+    include_all_cols: bool = False,
+    output_path: Path | None = None,
+) -> ProcessBatchesOutputs:
+    """Process every configured batch and rebuild the combined file only when all succeed."""
+
+    config_path = config_path.resolve()
+    configs = load_model_batch_configs(config_path)
+    outputs = tuple(
+        process_batch_for_config(
+            config=config,
+            include_all_cols=include_all_cols,
+            config_path=config_path,
+        )
+        for config in configs
+    )
+
+    all_terminal = all(
+        output.status in TERMINAL_BATCH_STATUSES[config.model.provider]
+        for config, output in zip(configs, outputs, strict=True)
+    )
+    all_successful = all(
+        output.status in SUCCESSFUL_RESULT_STATUSES[config.model.provider]
+        for config, output in zip(configs, outputs, strict=True)
+    )
+
+    resolved_output_path = output_path.resolve() if output_path is not None else None
+    if resolved_output_path is None and configs:
+        resolved_output_path = configs[0].batches.combined_output_path
+
+    combined_output_path: Path | None = None
+    if resolved_output_path is not None and all_terminal and all_successful:
+        processed_paths = [
+            (output.processed_records_path, output.processed_csv_path)
+            for output in outputs
+            if output.processed_records_path is not None and output.processed_csv_path is not None
+        ]
+        if len(processed_paths) != len(outputs):
+            raise ValueError("Not every successful batch produced processed annotation files")
+        combined_output_path = write_combined_processed_annotations(
+            processed_paths=processed_paths,
+            output_path=resolved_output_path,
+        )
+
+    return ProcessBatchesOutputs(
+        outputs=outputs,
+        combined_output_path=combined_output_path,
+        all_terminal=all_terminal,
+        all_successful=all_successful,
+    )
+
+
 def write_processed_annotations(
     processed_records_path: Path,
     processed_csv_path: Path,
     output_path: Path,
 ) -> Path:
-    """Create or append processed annotations to a CSV or JSONL file."""
+    """Rewrite one CSV or JSONL file from a single processed batch output."""
+
+    return write_combined_processed_annotations(
+        processed_paths=[(processed_records_path, processed_csv_path)],
+        output_path=output_path,
+    )
+
+
+def write_combined_processed_annotations(
+    processed_paths: Iterable[tuple[Path, Path]],
+    output_path: Path,
+) -> Path:
+    """Rebuild one combined CSV or JSONL file from one or more processed batch outputs."""
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    normalized_paths = list(processed_paths)
 
     if output_path.suffix == ".csv":
-        dataframe = pd.read_csv(processed_csv_path)
-        dataframe.to_csv(output_path, mode="a", header=not output_path.exists(), index=False)
+        dataframes = [_read_processed_csv(csv_path) for _, csv_path in normalized_paths]
+        dataframe = pd.concat(dataframes, ignore_index=True) if dataframes else pd.DataFrame()
+        dataframe.to_csv(output_path, index=False)
         return output_path
 
     if output_path.suffix == ".jsonl":
-        lines = processed_records_path.read_text()
-        needs_separator = False
-        if output_path.exists() and output_path.stat().st_size > 0:
-            existing_text = output_path.read_text()
-            needs_separator = not existing_text.endswith("\n")
-        with output_path.open("a") as handle:
-            if needs_separator:
-                handle.write("\n")
-            handle.write(lines)
-            if lines and not lines.endswith("\n"):
-                handle.write("\n")
+        with output_path.open("w") as handle:
+            for processed_records_path, _ in normalized_paths:
+                lines = processed_records_path.read_text()
+                if not lines:
+                    continue
+                handle.write(lines)
+                if not lines.endswith("\n"):
+                    handle.write("\n")
         return output_path
 
     raise ValueError("Output path must end in .csv or .jsonl")
@@ -414,18 +548,52 @@ def _provider_request(
     if provider_name == "google":
         config = {
             **model_params,
-            "system_instruction": system_prompt,
         }
         if max_tokens is not None:
             config["max_output_tokens"] = max_tokens
-        return {
-            "model": model,
-            "contents": user_prompt,
-            "metadata": {
-                "custom_id": custom_id,
-                "comment_id": str(comment_id),
+        config = _apply_google_batch_reasoning(
+            generation_config=config,
+            reasoning_effort=reasoning_effort,
+            reasoning_budget_tokens=reasoning_budget_tokens,
+        )
+        request_payload = {
+            "key": custom_id,
+            "request": {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [{"text": user_prompt}],
+                    }
+                ],
+                "generation_config": config,
             },
-            "config": config,
+        }
+        if system_prompt.strip():
+            request_payload["request"]["system_instruction"] = {
+                "parts": [{"text": system_prompt}]
+            }
+        return request_payload
+    if provider_name == "xai":
+        if reasoning_budget_tokens is not None:
+            raise ValueError("xAI batch requests do not support reasoning.budget_tokens")
+        body = {
+            **model_params,
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "stream": False,
+        }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+        if reasoning_effort:
+            body["reasoning_effort"] = reasoning_effort
+        return {
+            "batch_request_id": custom_id,
+            "batch_request": {
+                "chat_get_completion": body,
+            },
         }
     raise ValueError(f"Unsupported provider: {provider_name}")
 
@@ -451,11 +619,38 @@ def _create_provider_batch(
         client = Anthropic(api_key=_provider_api_key(config))
         return client.messages.batches.create(requests=provider_requests)
     if config.model.provider == "google":
+        from google.genai import types as gemini_types
+
         client = genai.Client(api_key=_provider_api_key(config))
+        upload = client.files.upload(
+            file=str(provider_requests_path),
+            config=gemini_types.UploadFileConfig(
+                display_name=f"{config.name}_batch_input",
+                mime_type="jsonl",
+            ),
+        )
         return client.batches.create(
             model=config.model.name,
-            src=provider_requests,
+            src=upload.name,
             config={"display_name": config.name},
+        )
+    if config.model.provider == "xai":
+        batch = _xai_api_request(
+            config=config,
+            method="POST",
+            path="/v1/batches",
+            payload={"name": config.name},
+        )
+        _xai_api_request(
+            config=config,
+            method="POST",
+            path=f"/v1/batches/{batch['batch_id']}/requests",
+            payload={"batch_requests": provider_requests},
+        )
+        return _xai_api_request(
+            config=config,
+            method="GET",
+            path=f"/v1/batches/{batch['batch_id']}",
         )
     raise ValueError(f"Unsupported provider: {config.model.provider}")
 
@@ -472,6 +667,12 @@ def _retrieve_provider_batch(config: ModelBatchConfig, batch_id: str) -> Any:
     if config.model.provider == "google":
         client = genai.Client(api_key=_provider_api_key(config))
         return client.batches.get(name=batch_id)
+    if config.model.provider == "xai":
+        return _xai_api_request(
+            config=config,
+            method="GET",
+            path=f"/v1/batches/{batch_id}",
+        )
     raise ValueError(f"Unsupported provider: {config.model.provider}")
 
 
@@ -491,10 +692,31 @@ def _download_provider_results(config: ModelBatchConfig, batch_object: Any) -> l
         return [_to_jsonable(entry) for entry in client.messages.batches.results(batch_object.id)]
 
     if config.model.provider == "google":
-        responses = getattr(getattr(batch_object, "dest", None), "inlined_responses", None)
-        if responses is None:
-            raise ValueError("Google batch completed without inline responses")
-        return [_to_jsonable(entry) for entry in responses]
+        file_name = getattr(getattr(batch_object, "dest", None), "file_name", None)
+        if file_name is None:
+            raise ValueError("Google batch completed without a destination file")
+        raw_bytes = _download_google_batch_output(file_name=file_name, api_key=_provider_api_key(config))
+        return [json.loads(line) for line in raw_bytes.decode("utf-8").splitlines() if line.strip()]
+
+    if config.model.provider == "xai":
+        batch_id = str(batch_object["batch_id"])
+        results: list[dict[str, Any]] = []
+        pagination_token: str | None = None
+        while True:
+            payload = _xai_api_request(
+                config=config,
+                method="GET",
+                path=f"/v1/batches/{batch_id}/results",
+                query={
+                    "page_size": 1000,
+                    "pagination_token": pagination_token,
+                },
+            )
+            results.extend(payload.get("results", []))
+            pagination_token = payload.get("pagination_token")
+            if not pagination_token:
+                break
+        return results
 
     raise ValueError(f"Unsupported provider: {config.model.provider}")
 
@@ -510,6 +732,8 @@ def _result_extractor(
         return _extract_anthropic_result
     if provider_name == "google":
         return _extract_google_result
+    if provider_name == "xai":
+        return _extract_xai_result
     raise ValueError(f"Unsupported provider: {provider_name}")
 
 
@@ -557,14 +781,46 @@ def _extract_google_result(
 ) -> tuple[str, str, dict[str, Any], str | None]:
     """Extract text content and status metadata from one Google batch result."""
 
-    metadata = entry.get("metadata", {})
-    custom_id = str(metadata.get("custom_id"))
-    error = entry.get("error")
-    if error is not None:
-        return custom_id, "", metadata, json.dumps(error, sort_keys=True)
+    custom_id = str(entry.get("key") or entry.get("custom_id") or "")
+    response = entry.get("response")
+    if response is not None:
+        if "error" in response:
+            return custom_id, "", response, json.dumps(response["error"], sort_keys=True)
+        return custom_id, _coerce_google_response_to_text(response), response, None
 
-    response = entry.get("response", {})
-    return custom_id, _coerce_google_response_to_text(response), response, None
+    if "error" in entry:
+        return custom_id, "", entry, json.dumps(entry["error"], sort_keys=True)
+    if "code" in entry and "message" in entry:
+        return custom_id, "", entry, json.dumps(
+            {"code": entry["code"], "message": entry["message"]},
+            sort_keys=True,
+        )
+
+    return custom_id, _coerce_google_response_to_text(entry), entry, None
+
+
+def _extract_xai_result(
+    entry: dict[str, Any],
+) -> tuple[str, str, dict[str, Any], str | None]:
+    """Extract text content and status metadata from one xAI batch result."""
+
+    custom_id = str(entry.get("batch_request_id", ""))
+    error_message = entry.get("error_message")
+    if error_message:
+        return custom_id, "", entry, str(error_message)
+
+    batch_result = entry.get("batch_result", {})
+    response = batch_result.get("response", {})
+    completion = response.get("chat_get_completion")
+    if completion is None:
+        return custom_id, "", entry, "xAI batch result did not include chat_get_completion"
+
+    choices = completion.get("choices", [])
+    if not choices:
+        return custom_id, "", completion, "xAI chat_get_completion did not include any choices"
+
+    message = choices[0].get("message", {})
+    return custom_id, _coerce_openai_content_to_text(message.get("content")), completion, None
 
 
 def _coerce_openai_content_to_text(content: Any) -> str:
@@ -620,6 +876,48 @@ def _parse_response_json(response_text: str) -> dict[str, Any]:
     return payload
 
 
+def _apply_google_batch_reasoning(
+    generation_config: dict[str, Any],
+    reasoning_effort: str | None,
+    reasoning_budget_tokens: int | None,
+) -> dict[str, Any]:
+    """Apply Gemini batch-compatible thinking controls to generation config."""
+
+    payload = dict(generation_config)
+    if reasoning_effort is not None and reasoning_budget_tokens is not None:
+        raise ValueError(
+            "Google Gemini batch requests cannot set both reasoning.effort and reasoning.budget_tokens"
+        )
+
+    if reasoning_budget_tokens is not None:
+        payload["thinking_config"] = {"thinking_budget": reasoning_budget_tokens}
+        return payload
+
+    if reasoning_effort is None:
+        return payload
+
+    normalized_effort = reasoning_effort.strip().lower()
+    if normalized_effort == "low":
+        payload["thinking_config"] = {"thinking_budget": 128}
+        return payload
+
+    raise ValueError(
+        "Google Gemini batch requests currently support reasoning.effort='low' only; "
+        "use reasoning.budget_tokens for other Gemini thinking settings"
+    )
+
+
+def _download_google_batch_output(file_name: str, api_key: str) -> bytes:
+    """Download the Gemini batch output file bytes from the Generative Language API."""
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        f"{file_name}:download?alt=media&key={api_key}"
+    )
+    with urllib_request.urlopen(url) as response:  # noqa: S310
+        return response.read()
+
+
 def _provider_api_key(config: ModelBatchConfig) -> str:
     """Read the provider API key from the configured environment variable."""
 
@@ -632,6 +930,42 @@ def _provider_api_key(config: ModelBatchConfig) -> str:
     return api_key
 
 
+def _xai_api_request(
+    config: ModelBatchConfig,
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None = None,
+    query: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Issue one JSON request to the xAI REST API and decode the response body."""
+
+    url = f"{XAI_API_BASE_URL}{path}"
+    normalized_query = {
+        key: value
+        for key, value in (query or {}).items()
+        if value is not None
+    }
+    if normalized_query:
+        url = f"{url}?{urllib_parse.urlencode(normalized_query)}"
+
+    request_body = None
+    headers = {
+        "Authorization": f"Bearer {_provider_api_key(config)}",
+        "Accept": "application/json",
+    }
+    if payload is not None:
+        request_body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    request = urllib_request.Request(url=url, data=request_body, method=method, headers=headers)
+    try:
+        with urllib_request.urlopen(request) as response:  # noqa: S310
+            return json.loads(response.read().decode("utf-8"))
+    except urllib_error.HTTPError as exc:
+        response_text = exc.read().decode("utf-8", errors="replace")
+        raise ValueError(f"xAI API request failed ({exc.code} {method} {path}): {response_text}") from exc
+
+
 def _judge_id(config: ModelBatchConfig) -> str:
     """Return the identifier used for processed model rows."""
 
@@ -640,11 +974,19 @@ def _judge_id(config: ModelBatchConfig) -> str:
     return f"{config.model.provider}:{config.model.name}"
 
 
+def _model_id(config: ModelBatchConfig) -> str:
+    """Return a stable model identifier for summaries and metadata."""
+
+    return config.model.id or _judge_id(config)
+
+
 def _batch_identifier(provider_name: str, batch_object: Any) -> str:
     """Return the provider-specific batch identifier."""
 
     if provider_name == "google":
         return str(batch_object.name)
+    if provider_name == "xai":
+        return str(batch_object["batch_id"])
     return str(batch_object.id)
 
 
@@ -657,7 +999,17 @@ def _batch_status(provider_name: str, batch_object: Any) -> str:
         return str(batch_object.processing_status)
     if provider_name == "google":
         state = getattr(batch_object, "state", None)
-        return getattr(state, "value", str(state))
+        return getattr(state, "name", getattr(state, "value", str(state)))
+    if provider_name == "xai":
+        state = batch_object.get("state", {})
+        num_pending = int(state.get("num_pending", 0) or 0)
+        num_error = int(state.get("num_error", 0) or 0)
+        num_cancelled = int(state.get("num_cancelled", 0) or 0)
+        if num_pending > 0:
+            return "in_progress"
+        if num_error > 0 or num_cancelled > 0:
+            return "completed_with_errors"
+        return "completed"
     raise ValueError(f"Unsupported provider: {provider_name}")
 
 
@@ -682,6 +1034,14 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     """Read a JSONL file into a list of dict rows."""
 
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def _read_processed_csv(path: Path) -> pd.DataFrame:
+    """Read one processed CSV, allowing empty files from all-error batches."""
+
+    if not path.exists() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    return pd.read_csv(path)
 
 
 def _to_jsonable(value: Any) -> Any:
