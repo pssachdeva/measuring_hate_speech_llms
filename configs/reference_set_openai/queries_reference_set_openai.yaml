@@ -1,0 +1,166 @@
+name: reference_set_openai
+description: |
+  OpenAI reference-set experiment matrix for comparing current text models on
+  the MHS reference set. This focuses on text-capable models that fit the
+  comment-rating workflow in this repository, and sweeps reasoning levels for
+  the current GPT-5.4 and GPT-5.2 families.
+
+subset: reference_set
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+models:
+  - id: openai_gpt-5.4_none
+    provider: openai
+    name: gpt-5.4
+    max_tokens: 2000
+    reasoning:
+      effort: none
+
+  - id: openai_gpt-5.4_low
+    provider: openai
+    name: gpt-5.4
+    max_tokens: 2000
+    reasoning:
+      effort: low
+
+  - id: openai_gpt-5.4_medium
+    provider: openai
+    name: gpt-5.4
+    max_tokens: 2000
+    reasoning:
+      effort: medium
+
+  - id: openai_gpt-5.4_high
+    provider: openai
+    name: gpt-5.4
+    max_tokens: 8000
+    reasoning:
+      effort: high
+
+  - id: openai_gpt-5.4_xhigh
+    provider: openai
+    name: gpt-5.4
+    max_tokens: 10000
+    reasoning:
+      effort: xhigh
+
+  - id: openai_gpt-5.2_none
+    provider: openai
+    name: gpt-5.2
+    max_tokens: 2000
+    reasoning:
+      effort: none
+
+  - id: openai_gpt-5.2_low
+    provider: openai
+    name: gpt-5.2
+    max_tokens: 2000
+    reasoning:
+      effort: low
+
+  - id: openai_gpt-5.2_medium
+    provider: openai
+    name: gpt-5.2
+    max_tokens: 2000
+    reasoning:
+      effort: medium
+
+  - id: openai_gpt-5.2_high
+    provider: openai
+    name: gpt-5.2
+    max_tokens: 8000
+    reasoning:
+      effort: high
+
+  - id: openai_gpt-5.2_xhigh
+    provider: openai
+    name: gpt-5.2
+    max_tokens: 10000
+    reasoning:
+      effort: xhigh
+
+  - id: openai_gpt-5.4-mini_none
+    provider: openai
+    name: gpt-5.4-mini
+    max_tokens: 2000
+    reasoning:
+      effort: none
+
+  - id: openai_gpt-5.4-mini_low
+    provider: openai
+    name: gpt-5.4-mini
+    max_tokens: 2000
+    reasoning:
+      effort: low
+
+  - id: openai_gpt-5.4-mini_medium
+    provider: openai
+    name: gpt-5.4-mini
+    max_tokens: 2000
+    reasoning:
+      effort: medium
+
+  - id: openai_gpt-5.4-mini_high
+    provider: openai
+    name: gpt-5.4-mini
+    max_tokens: 4000
+    reasoning:
+      effort: high
+
+  - id: openai_gpt-5.4-mini_xhigh
+    provider: openai
+    name: gpt-5.4-mini
+    max_tokens: 4000
+    reasoning:
+      effort: xhigh
+
+  - id: openai_gpt-5.4-nano_none
+    provider: openai
+    name: gpt-5.4-nano
+    max_tokens: 2000
+    reasoning:
+      effort: none
+
+  - id: openai_gpt-5.4-nano_low
+    provider: openai
+    name: gpt-5.4-nano
+    max_tokens: 2000
+    reasoning:
+      effort: low
+
+  - id: openai_gpt-5.4-nano_medium
+    provider: openai
+    name: gpt-5.4-nano
+    max_tokens: 2000
+    reasoning:
+      effort: medium
+
+  - id: openai_gpt-5.4-nano_high
+    provider: openai
+    name: gpt-5.4-nano
+    max_tokens: 4000
+    reasoning:
+      effort: high
+
+  - id: openai_gpt-5.4-nano_xhigh
+    provider: openai
+    name: gpt-5.4-nano
+    max_tokens: 4000
+    reasoning:
+      effort: xhigh
+
+  - id: openai_gpt-4.1
+    provider: openai
+    name: gpt-4.1
+    max_tokens: 2000
+
+  - id: openai_gpt-4o
+    provider: openai
+    name: gpt-4o
+    max_tokens: 2000
+  
+batches:
+  run_dir: batches/reference_set_openai
+  combined_output_path: data/reference_set_openai_processed.csv
