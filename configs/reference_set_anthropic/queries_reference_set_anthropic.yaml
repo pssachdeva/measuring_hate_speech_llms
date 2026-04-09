@@ -1,0 +1,116 @@
+name: reference_set_anthropic
+description: |
+  Anthropic reference-set experiment matrix for comparing current stable Claude
+  text models on the MHS reference set. This includes the latest generally
+  available Opus, Sonnet, and Haiku families as of April 8, 2026, including
+  older still-active Claude 4 and 4.5 models. Non-adaptive models use manual
+  thinking with a 1024-token budget and 2048 max output tokens. Claude Opus
+  4.5, Claude Opus 4.6, and Claude Sonnet 4.6 sweep low/medium/high effort.
+
+subset: reference_set
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+models:
+  - id: anthropic_claude-haiku-4-5
+    provider: anthropic
+    name: claude-haiku-4-5-20251001
+    max_tokens: 2048
+    reasoning:
+      budget_tokens: 1024
+
+  - id: anthropic_claude-sonnet-4
+    provider: anthropic
+    name: claude-sonnet-4-20250514
+    max_tokens: 2048
+    reasoning:
+      budget_tokens: 1024
+
+  - id: anthropic_claude-sonnet-4-5
+    provider: anthropic
+    name: claude-sonnet-4-5-20250929
+    max_tokens: 2048
+    reasoning:
+      budget_tokens: 1024
+
+  - id: anthropic_claude-sonnet-4-6_low
+    provider: anthropic
+    name: claude-sonnet-4-6
+    max_tokens: 2048
+    reasoning:
+      effort: low
+
+  - id: anthropic_claude-sonnet-4-6_medium
+    provider: anthropic
+    name: claude-sonnet-4-6
+    max_tokens: 2048
+    reasoning:
+      effort: medium
+
+  - id: anthropic_claude-sonnet-4-6_high
+    provider: anthropic
+    name: claude-sonnet-4-6
+    max_tokens: 2048
+    reasoning:
+      effort: high
+
+  - id: anthropic_claude-opus-4
+    provider: anthropic
+    name: claude-opus-4-20250514
+    max_tokens: 2048
+    reasoning:
+      budget_tokens: 1024
+
+  - id: anthropic_claude-opus-4-1
+    provider: anthropic
+    name: claude-opus-4-1-20250805
+    max_tokens: 2048
+    reasoning:
+      budget_tokens: 1024
+
+  - id: anthropic_claude-opus-4-5_low
+    provider: anthropic
+    name: claude-opus-4-5-20251101
+    max_tokens: 2048
+    reasoning:
+      effort: low
+
+  - id: anthropic_claude-opus-4-5_medium
+    provider: anthropic
+    name: claude-opus-4-5-20251101
+    max_tokens: 2048
+    reasoning:
+      effort: medium
+
+  - id: anthropic_claude-opus-4-5_high
+    provider: anthropic
+    name: claude-opus-4-5-20251101
+    max_tokens: 2048
+    reasoning:
+      effort: high
+
+  - id: anthropic_claude-opus-4-6_low
+    provider: anthropic
+    name: claude-opus-4-6
+    max_tokens: 2048
+    reasoning:
+      effort: low
+
+  - id: anthropic_claude-opus-4-6_medium
+    provider: anthropic
+    name: claude-opus-4-6
+    max_tokens: 2048
+    reasoning:
+      effort: medium
+
+  - id: anthropic_claude-opus-4-6_high
+    provider: anthropic
+    name: claude-opus-4-6
+    max_tokens: 2048
+    reasoning:
+      effort: high
+
+batches:
+  run_dir: batches/reference_set_anthropic
+  combined_output_path: data/reference_set_anthropic_processed.csv
