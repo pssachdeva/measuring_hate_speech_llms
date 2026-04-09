@@ -4,8 +4,8 @@ import argparse
 from pathlib import Path
 
 from mhs_llms.facets.judge_severity_plot import (
+    load_reference_reasoning_severities,
     load_reference_openai_judge_severities,
-    load_reference_openai_reasoning_severities,
     plot_reference_openai_judge_severities,
     plot_reference_openai_reasoning_severities,
 )
@@ -13,6 +13,7 @@ from mhs_llms.paths import ARTIFACTS_DIR, FACETS_DIR
 
 
 DEFAULT_SCORES_PATH = FACETS_DIR / "reference_set_openai" / "judges_scores.csv"
+DEFAULT_ANTHROPIC_SCORES_PATH = FACETS_DIR / "reference_set_anthropic" / "judges_scores.csv"
 DEFAULT_OUTPUT_PATH = ARTIFACTS_DIR / "reference_set_openai_judge_severities.png"
 DEFAULT_REASONING_OUTPUT_PATH = ARTIFACTS_DIR / "reference_set_openai_reasoning_judge_severities.png"
 
@@ -33,6 +34,12 @@ def main() -> None:
         help="Path to the FACETS judges_scores.csv file.",
     )
     parser.add_argument(
+        "--anthropic-scores-file",
+        dest="anthropic_scores_path",
+        default=str(DEFAULT_ANTHROPIC_SCORES_PATH),
+        help="Path to the Anthropic FACETS judges_scores.csv file used for the reasoning plot.",
+    )
+    parser.add_argument(
         "--output",
         dest="output_path",
         default=str(DEFAULT_OUTPUT_PATH),
@@ -47,18 +54,20 @@ def main() -> None:
     args = parser.parse_args()
 
     scores_path = Path(args.scores_path).resolve()
+    anthropic_scores_path = Path(args.anthropic_scores_path).resolve()
     output_path = Path(args.output_path).resolve()
     reasoning_output_path = Path(args.reasoning_output_path).resolve()
 
     severity_frame = load_reference_openai_judge_severities(scores_path)
     plotted_path = plot_reference_openai_judge_severities(severity_frame, output_path)
-    reasoning_frame = load_reference_openai_reasoning_severities(scores_path)
+    reasoning_frame = load_reference_reasoning_severities(scores_path, anthropic_scores_path)
     reasoning_plotted_path = plot_reference_openai_reasoning_severities(
         reasoning_frame,
         reasoning_output_path,
     )
 
     print(f"scores_file={scores_path}")
+    print(f"anthropic_scores_file={anthropic_scores_path}")
     print(f"model_comparison_output={plotted_path}")
     print(f"reasoning_output={reasoning_plotted_path}")
 

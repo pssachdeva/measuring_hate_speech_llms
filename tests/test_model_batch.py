@@ -18,6 +18,7 @@ from mhs_llms.batch import (
     _extract_openai_result,
     _extract_xai_result,
     _batch_status,
+    _build_processing_error_record,
     _parse_response_json,
 )
 from mhs_llms.config import (
@@ -86,6 +87,59 @@ def test_extract_anthropic_result_reads_text_blocks() -> None:
     assert custom_id == "comment-2"
     assert response_error is None
     assert '"target_groups":["A"]' in response_text
+
+
+def test_extract_anthropic_result_handles_refusal_without_text_block() -> None:
+    entry = {
+        "custom_id": "comment-2",
+        "result": {
+            "type": "succeeded",
+            "message": {
+                "content": [],
+                "stop_reason": "refusal",
+            },
+        },
+    }
+
+    custom_id, response_text, response_metadata, response_error = _extract_anthropic_result(entry)
+
+    assert custom_id == "comment-2"
+    assert response_text == ""
+    assert response_metadata["stop_reason"] == "refusal"
+    assert response_error == "Anthropic model refusal with no text content"
+
+
+def test_build_processing_error_record_marks_anthropic_refusal_as_structured_error() -> None:
+    error_record = _build_processing_error_record(
+        provider_name="anthropic",
+        custom_id="comment-20005",
+        comment_id=20005,
+        response_text=(
+            "I can't analyze this content. The provided text describes explicit sexual violence, "
+            "which I'm not able to engage with."
+        ),
+        response_metadata={"stop_reason": "end_turn"},
+        exception=json.JSONDecodeError("Expecting value", "", 0),
+    )
+
+    assert error_record["error_type"] == "model_refusal"
+    assert error_record["error"] == "Model returned an unstructured refusal instead of the expected JSON object"
+    assert error_record["provider_stop_reason"] == "end_turn"
+    assert "parse_error" in error_record
+
+
+def test_build_processing_error_record_marks_non_json_text_separately() -> None:
+    error_record = _build_processing_error_record(
+        provider_name="anthropic",
+        custom_id="comment-7",
+        comment_id=7,
+        response_text="target_groups: [I]",
+        response_metadata={"stop_reason": "end_turn"},
+        exception=json.JSONDecodeError("Expecting value", "", 0),
+    )
+
+    assert error_record["error_type"] == "invalid_json_response"
+    assert error_record["error"] == "Model returned non-JSON text instead of the expected JSON object"
 
 
 def test_extract_google_result_reads_candidate_parts() -> None:
@@ -244,6 +298,53 @@ def test_build_requests_for_anthropic_follow_openai_config_shape() -> None:
     }
 
 
+def test_build_requests_for_anthropic_use_adaptive_thinking_for_claude_46() -> None:
+    config = ModelBatchConfig(
+        name="test-anthropic-adaptive",
+        subset="reference_set",
+        limit=1,
+        prompt=BatchPromptConfig(
+            system_prompt_path=Path("prompts/mhs_survey_v1.txt"),
+            user_prompt_template="",
+        ),
+        model=BatchModelConfig(
+            provider="anthropic",
+            name="claude-sonnet-4-6",
+            id="anthropic:claude-sonnet-4-6",
+            max_tokens=4096,
+            params={},
+            reasoning=BatchReasoningConfig(effort="medium"),
+        ),
+        batches=BatchStorageConfig(
+            run_dir=Path("batches/test-anthropic-adaptive"),
+            request_manifest_filename="request_manifest.jsonl",
+            provider_requests_filename="provider_requests.jsonl",
+            batch_metadata_filename="batch_job.json",
+            raw_results_filename="raw_results.jsonl",
+            processed_records_filename="processed_records.jsonl",
+            processed_csv_filename="processed_records.csv",
+            errors_filename="processing_errors.jsonl",
+        ),
+    )
+
+    _, provider_requests = _build_requests(
+        config=config,
+        comments=[{"comment_id": 1, "text": "just the comment"}],
+    )
+
+    assert provider_requests[0] == {
+        "custom_id": "comment-1",
+        "params": {
+            "model": "claude-sonnet-4-6",
+            "system": Path("prompts/mhs_survey_v1.txt").read_text(),
+            "messages": [{"role": "user", "content": "just the comment"}],
+            "max_tokens": 4096,
+            "output_config": {"effort": "medium"},
+            "thinking": {"type": "adaptive"},
+        },
+    }
+
+
 def test_build_requests_for_google_use_uploaded_batch_shape() -> None:
     config = ModelBatchConfig(
         name="test-google",
@@ -278,15 +379,15 @@ def test_build_requests_for_google_use_uploaded_batch_shape() -> None:
         comments=[{"comment_id": 1, "text": "just the comment"}],
     )
 
-    assert provider_requests[0]["key"] == "comment-1"
+    assert provider_requests[0]["metadata"]["key"] == "comment-1"
     assert provider_requests[0]["request"]["contents"][0]["parts"][0]["text"] == "just the comment"
     assert (
-        provider_requests[0]["request"]["system_instruction"]["parts"][0]["text"]
+        provider_requests[0]["request"]["systemInstruction"]["parts"][0]["text"]
         == Path("prompts/mhs_survey_v1.txt").read_text()
     )
-    assert provider_requests[0]["request"]["generation_config"]["max_output_tokens"] == 256
-    assert provider_requests[0]["request"]["generation_config"]["thinking_config"] == {
-        "thinking_budget": 64
+    assert provider_requests[0]["request"]["generationConfig"]["maxOutputTokens"] == 256
+    assert provider_requests[0]["request"]["generationConfig"]["thinkingConfig"] == {
+        "thinkingBudget": 64
     }
 
 
@@ -332,15 +433,15 @@ def test_build_requests_for_xai_follow_native_batch_shape() -> None:
     assert chat_request["reasoning_effort"] == "low"
 
 
-def test_apply_google_batch_reasoning_maps_low_effort_to_budget() -> None:
+def test_apply_google_batch_reasoning_maps_effort_to_thinking_level() -> None:
     payload = _apply_google_batch_reasoning(
         generation_config={"max_output_tokens": 80},
-        reasoning_effort="low",
+        reasoning_effort="medium",
         reasoning_budget_tokens=None,
     )
 
     assert payload["max_output_tokens"] == 80
-    assert payload["thinking_config"]["thinking_budget"] == 128
+    assert payload["thinking_config"]["thinking_level"] == "medium"
 
 
 def test_apply_google_batch_reasoning_rejects_effort_and_budget_together() -> None:
@@ -388,11 +489,7 @@ def test_create_google_batch_uploads_jsonl_and_uses_uploaded_file_name(
         ),
     )
 
-    upload_calls: list[tuple[str, object]] = []
     create_calls: list[tuple[str, str, object]] = []
-
-    class DummyUpload:
-        name = "files/upload-123"
 
     class DummyState:
         name = "JOB_STATE_RUNNING"
@@ -401,11 +498,6 @@ def test_create_google_batch_uploads_jsonl_and_uses_uploaded_file_name(
         name = "batches/123"
         state = DummyState()
 
-    class DummyFiles:
-        def upload(self, file, config):
-            upload_calls.append((file, config))
-            return DummyUpload()
-
     class DummyBatches:
         def create(self, model, src, config):
             create_calls.append((model, src, config))
@@ -413,7 +505,6 @@ def test_create_google_batch_uploads_jsonl_and_uses_uploaded_file_name(
 
     class DummyClient:
         def __init__(self, api_key):
-            self.files = DummyFiles()
             self.batches = DummyBatches()
 
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
@@ -422,13 +513,38 @@ def test_create_google_batch_uploads_jsonl_and_uses_uploaded_file_name(
     batch = _create_provider_batch(
         config=config,
         provider_requests_path=provider_requests_path,
-        provider_requests=[{"key": "comment-1", "request": {}}],
+        provider_requests=[
+            {
+                "metadata": {"key": "comment-1"},
+                "request": {
+                    "contents": [{"parts": [{"text": "just the comment"}], "role": "user"}],
+                    "generationConfig": {
+                        "maxOutputTokens": 256,
+                        "thinkingConfig": {"thinkingLevel": "low"},
+                    },
+                    "systemInstruction": {"parts": [{"text": "system prompt"}]},
+                },
+            }
+        ],
     )
 
     assert batch.name == "batches/123"
-    assert upload_calls[0][0] == str(provider_requests_path)
-    assert upload_calls[0][1].mime_type == "jsonl"
-    assert create_calls == [("gemini-2.5-pro", "files/upload-123", {"display_name": "test-google"})]
+    assert create_calls == [
+        (
+            "gemini-2.5-pro",
+            [
+                {
+                    "contents": [{"parts": [{"text": "just the comment"}], "role": "user"}],
+                    "config": {
+                        "max_output_tokens": 256,
+                        "thinking_config": {"thinking_level": "low"},
+                        "system_instruction": {"parts": [{"text": "system prompt"}]},
+                    },
+                }
+            ],
+            {"display_name": "test-google"},
+        )
+    ]
 
 
 def test_create_xai_batch_creates_batch_and_adds_requests(tmp_path: Path, monkeypatch) -> None:

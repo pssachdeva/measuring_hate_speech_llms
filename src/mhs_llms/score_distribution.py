@@ -1,12 +1,12 @@
 """Utilities for comparing human and LLM hate-score distributions."""
 
 from pathlib import Path
-import math
 
 import matplotlib.pyplot as plt
 import pandas as pd
 
 from mhs_llms.paths import ARTIFACTS_DIR
+from mhs_llms.plotting import build_gaussian_kde_curve
 from mhs_llms.schema import ITEM_NAMES, prompt_letter_to_hf_value
 
 RAW_ITEM_COLUMN_ALIASES = {
@@ -138,7 +138,7 @@ def plot_score_distributions(
 
     for index, (source, scores) in enumerate(source_to_scores.items()):
         color = colors.get(source, f"C{index}")
-        x_values, y_values = _build_kde_curve(scores, plot_min, plot_max)
+        x_values, y_values = build_gaussian_kde_curve(scores, plot_min, plot_max)
         ax.plot(x_values, y_values, linewidth=2, label=source, color=color)
         ax.fill_between(x_values, y_values, alpha=0.18, color=color)
 
@@ -193,42 +193,3 @@ def _align_item_value(item_name: str, value: object) -> int:
     if normalized_value.isalpha():
         return prompt_letter_to_hf_value(item_name, normalized_value)
     return int(float(normalized_value))
-
-
-def _build_kde_curve(values: list[float], x_min: float, x_max: float) -> tuple[list[float], list[float]]:
-    """Estimate a smooth Gaussian KDE curve for a small list of scores."""
-
-    if not values:
-        raise ValueError("KDE requires at least one score")
-
-    bandwidth = _estimate_bandwidth(values)
-    x_values = [x_min + (x_max - x_min) * index / 511 for index in range(512)]
-    normalizer = len(values) * bandwidth * math.sqrt(2.0 * math.pi)
-    y_values = []
-
-    for x_value in x_values:
-        kernel_sum = 0.0
-        for sample in values:
-            standardized = (x_value - sample) / bandwidth
-            kernel_sum += math.exp(-0.5 * standardized * standardized)
-        y_values.append(kernel_sum / normalizer)
-
-    return x_values, y_values
-
-
-def _estimate_bandwidth(values: list[float]) -> float:
-    """Estimate a KDE bandwidth with a Silverman-style rule and safe fallback."""
-
-    if len(values) == 1:
-        return 1.0
-
-    series = pd.Series(values, dtype=float)
-    standard_deviation = float(series.std(ddof=1))
-    interquartile_range = float(series.quantile(0.75) - series.quantile(0.25))
-    scaled_iqr = interquartile_range / 1.34 if interquartile_range else 0.0
-    spread = min(value for value in (standard_deviation, scaled_iqr) if value > 0.0) if any(
-        value > 0.0 for value in (standard_deviation, scaled_iqr)
-    ) else standard_deviation
-    if spread <= 0.0:
-        return 1.0
-    return max(0.3, 0.9 * spread * (len(values) ** (-1.0 / 5.0)))
