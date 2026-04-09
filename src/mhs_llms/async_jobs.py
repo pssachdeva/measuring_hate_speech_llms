@@ -12,6 +12,8 @@ from openai import OpenAI
 import pandas as pd
 
 from mhs_llms.batch import (
+    _apply_anthropic_request_reasoning,
+    _build_processing_error_record,
     _coerce_anthropic_content_to_text,
     _coerce_google_response_to_text,
     _coerce_openai_content_to_text,
@@ -294,15 +296,16 @@ def process_async_for_config(
             )
             processed_rows.append(annotation_record_to_row(record, include_metadata=include_all_cols))
         except Exception as exc:  # noqa: BLE001
-            processing_errors.append(
-                {
-                    "custom_id": manifest_row["custom_id"],
-                    "comment_id": manifest_row["comment_id"],
-                    "error": str(exc),
-                    "response_text": response_text,
-                    "response_path": str(response_path),
-                }
+            processing_error = _build_processing_error_record(
+                provider_name=config.model.provider,
+                custom_id=manifest_row["custom_id"],
+                comment_id=manifest_row["comment_id"],
+                response_text=response_text,
+                response_metadata=response_payload.get("provider_response"),
+                exception=exc,
             )
+            processing_error["response_path"] = str(response_path)
+            processing_errors.append(processing_error)
 
     _write_jsonl(paths.processed_records_path, processed_rows)
     pd.DataFrame(processed_rows).to_csv(paths.processed_csv_path, index=False)
@@ -449,14 +452,14 @@ def _build_async_provider_request(
         }
         if config.model.max_tokens is not None:
             payload["max_tokens"] = config.model.max_tokens
-        if config.model.reasoning.budget_tokens is not None:
-            payload["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": config.model.reasoning.budget_tokens,
-            }
         if config.model.params:
             payload.update(config.model.params)
-        return payload
+        return _apply_anthropic_request_reasoning(
+            request_params=payload,
+            model=config.model.name,
+            reasoning_effort=config.model.reasoning.effort,
+            reasoning_budget_tokens=config.model.reasoning.budget_tokens,
+        )
 
     if provider == "google":
         generation_config = dict(config.model.params)

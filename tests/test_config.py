@@ -30,9 +30,9 @@ def test_load_model_batch_config_supports_anthropic_shape() -> None:
     assert config.prompt.system_prompt_path == (Path.cwd() / "prompts" / "mhs_survey_v1.txt").resolve()
     assert config.subset == "reference_set"
     assert config.limit is None
-    assert config.model.max_tokens == 2000
-    assert config.model.reasoning.effort is None
-    assert config.model.reasoning.budget_tokens == 1024
+    assert config.model.max_tokens == 4096
+    assert config.model.reasoning.effort == "medium"
+    assert config.model.reasoning.budget_tokens is None
     assert config.model.id == "anthropic_claude-sonnet-4-6_reference"
     assert config.batches.run_dir == (
         Path.cwd() / "batches" / "anthropic_claude-sonnet-4-6_reference"

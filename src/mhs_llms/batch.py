@@ -232,7 +232,18 @@ def process_batch_for_config(
     processing_errors: list[dict[str, Any]] = []
 
     for entry in raw_entries:
-        custom_id, response_text, response_metadata, response_error = extractor(entry)
+        try:
+            custom_id, response_text, response_metadata, response_error = extractor(entry)
+        except Exception as exc:  # noqa: BLE001
+            processing_errors.append(
+                {
+                    "custom_id": _result_entry_custom_id(config.model.provider, entry),
+                    "error": f"Provider result extraction failed: {exc}",
+                    "error_type": "provider_response_format_error",
+                    "raw_result": entry,
+                }
+            )
+            continue
         manifest_row = manifest_by_custom_id.get(custom_id)
         if manifest_row is None:
             processing_errors.append(
@@ -274,15 +285,16 @@ def process_batch_for_config(
                 annotation_record_to_row(record, include_metadata=include_all_cols)
             )
         except Exception as exc:  # noqa: BLE001
-            processing_errors.append(
-                {
-                    "custom_id": custom_id,
-                    "comment_id": manifest_row["comment_id"],
-                    "error": str(exc),
-                    "response_text": response_text,
-                    "raw_result": entry,
-                }
+            processing_error = _build_processing_error_record(
+                provider_name=config.model.provider,
+                custom_id=custom_id,
+                comment_id=manifest_row["comment_id"],
+                response_text=response_text,
+                response_metadata=response_metadata,
+                exception=exc,
             )
+            processing_error["raw_result"] = entry
+            processing_errors.append(processing_error)
 
     _write_jsonl(processed_records_path, processed_rows)
     pd.DataFrame(processed_rows).to_csv(processed_csv_path, index=False)
@@ -536,11 +548,12 @@ def _provider_request(
         }
         if max_tokens is not None:
             params["max_tokens"] = max_tokens
-        if reasoning_budget_tokens is not None:
-            params["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": reasoning_budget_tokens,
-            }
+        params = _apply_anthropic_request_reasoning(
+            request_params=params,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            reasoning_budget_tokens=reasoning_budget_tokens,
+        )
         return {
             "custom_id": custom_id,
             "params": params,
@@ -557,7 +570,7 @@ def _provider_request(
             reasoning_budget_tokens=reasoning_budget_tokens,
         )
         request_payload = {
-            "key": custom_id,
+            "metadata": {"key": custom_id},
             "request": {
                 "contents": [
                     {
@@ -565,11 +578,11 @@ def _provider_request(
                         "parts": [{"text": user_prompt}],
                     }
                 ],
-                "generation_config": config,
+                "generationConfig": _google_batch_alias_dict(config),
             },
         }
         if system_prompt.strip():
-            request_payload["request"]["system_instruction"] = {
+            request_payload["request"]["systemInstruction"] = {
                 "parts": [{"text": system_prompt}]
             }
         return request_payload
@@ -619,19 +632,14 @@ def _create_provider_batch(
         client = Anthropic(api_key=_provider_api_key(config))
         return client.messages.batches.create(requests=provider_requests)
     if config.model.provider == "google":
-        from google.genai import types as gemini_types
-
         client = genai.Client(api_key=_provider_api_key(config))
-        upload = client.files.upload(
-            file=str(provider_requests_path),
-            config=gemini_types.UploadFileConfig(
-                display_name=f"{config.name}_batch_input",
-                mime_type="jsonl",
-            ),
-        )
+        inline_requests = [
+            _google_inline_request_from_batch_entry(request)
+            for request in provider_requests
+        ]
         return client.batches.create(
             model=config.model.name,
-            src=upload.name,
+            src=inline_requests,
             config={"display_name": config.name},
         )
     if config.model.provider == "xai":
@@ -692,6 +700,29 @@ def _download_provider_results(config: ModelBatchConfig, batch_object: Any) -> l
         return [_to_jsonable(entry) for entry in client.messages.batches.results(batch_object.id)]
 
     if config.model.provider == "google":
+        output = getattr(batch_object, "output", None)
+        inlined_responses = getattr(output, "inlined_responses", None)
+        if inlined_responses is None:
+            output_payload = _to_jsonable(output) if output is not None else {}
+            if isinstance(output_payload, dict):
+                inlined_responses = output_payload.get("inlined_responses") or output_payload.get(
+                    "inlinedResponses"
+                )
+        if inlined_responses is not None:
+            request_manifest = _load_request_manifest_entries(config)
+            response_rows = [_to_jsonable(item) for item in inlined_responses]
+            if len(response_rows) != len(request_manifest):
+                raise ValueError(
+                    "Google inline batch response count did not match the request manifest "
+                    f"({len(response_rows)} != {len(request_manifest)})"
+                )
+            results: list[dict[str, Any]] = []
+            for manifest_entry, response_row in zip(request_manifest, response_rows, strict=True):
+                entry = dict(response_row)
+                entry.setdefault("custom_id", str(manifest_entry["custom_id"]))
+                results.append(entry)
+            return results
+
         file_name = getattr(getattr(batch_object, "dest", None), "file_name", None)
         if file_name is None:
             raise ValueError("Google batch completed without a destination file")
@@ -773,7 +804,13 @@ def _extract_anthropic_result(
         return custom_id, "", result, f"Anthropic request ended with result type '{result_type}'"
 
     message = result.get("message", {})
-    return custom_id, _coerce_anthropic_content_to_text(message.get("content", [])), message, None
+    content = message.get("content", [])
+    if not any(isinstance(block, dict) and block.get("type") == "text" for block in content):
+        stop_reason = message.get("stop_reason")
+        if stop_reason == "refusal":
+            return custom_id, "", message, "Anthropic model refusal with no text content"
+        return custom_id, "", message, "Anthropic response did not include a text block"
+    return custom_id, _coerce_anthropic_content_to_text(content), message, None
 
 
 def _extract_google_result(
@@ -781,7 +818,13 @@ def _extract_google_result(
 ) -> tuple[str, str, dict[str, Any], str | None]:
     """Extract text content and status metadata from one Google batch result."""
 
-    custom_id = str(entry.get("key") or entry.get("custom_id") or "")
+    metadata = entry.get("metadata", {})
+    custom_id = str(
+        entry.get("key")
+        or entry.get("custom_id")
+        or (metadata.get("key") if isinstance(metadata, dict) else "")
+        or ""
+    )
     response = entry.get("response")
     if response is not None:
         if "error" in response:
@@ -860,6 +903,95 @@ def _coerce_google_response_to_text(response: dict[str, Any]) -> str:
     return "".join(text_chunks)
 
 
+def _result_entry_custom_id(provider_name: str, entry: dict[str, Any]) -> str:
+    """Extract the provider-specific request identifier from one raw result entry."""
+
+    if provider_name == "openai":
+        return str(entry.get("custom_id", ""))
+    if provider_name == "anthropic":
+        return str(entry.get("custom_id", ""))
+    if provider_name == "google":
+        metadata = entry.get("metadata", {})
+        return str(
+            entry.get("key")
+            or entry.get("custom_id")
+            or (metadata.get("key") if isinstance(metadata, dict) else "")
+            or ""
+        )
+    if provider_name == "xai":
+        return str(entry.get("batch_request_id", ""))
+    return str(entry.get("custom_id", ""))
+
+
+def _google_batch_alias_dict(payload: dict[str, Any]) -> dict[str, Any]:
+    """Convert Google batch request keys to the REST alias casing expected by Batch API."""
+
+    def convert(value: Any) -> Any:
+        if isinstance(value, dict):
+            converted: dict[str, Any] = {}
+            for key, nested_value in value.items():
+                parts = key.split("_")
+                alias = parts[0] + "".join(part.capitalize() for part in parts[1:])
+                converted[alias] = convert(nested_value)
+            return converted
+        if isinstance(value, list):
+            return [convert(item) for item in value]
+        return value
+
+    return convert(payload)
+
+
+def _google_inline_request_from_batch_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Convert one stored Google batch row into the SDK inline-request shape."""
+
+    request_payload = dict(entry.get("request", entry))
+    inline_request = {
+        "contents": request_payload["contents"],
+    }
+
+    config: dict[str, Any] = {}
+    generation_config = request_payload.get("generationConfig") or request_payload.get("generation_config")
+    if generation_config is not None:
+        config.update(_google_batch_sdk_dict(generation_config))
+
+    system_instruction = request_payload.get("systemInstruction") or request_payload.get("system_instruction")
+    if system_instruction is not None:
+        config["system_instruction"] = _google_batch_sdk_dict(system_instruction)
+
+    if config:
+        inline_request["config"] = config
+
+    return inline_request
+
+
+def _google_batch_sdk_dict(payload: dict[str, Any]) -> dict[str, Any]:
+    """Convert Google REST alias keys back to the SDK snake_case request shape."""
+
+    def convert(value: Any) -> Any:
+        if isinstance(value, dict):
+            converted: dict[str, Any] = {}
+            for key, nested_value in value.items():
+                snake_key = []
+                for index, char in enumerate(key):
+                    if char.isupper() and index > 0:
+                        snake_key.append("_")
+                    snake_key.append(char.lower())
+                converted["".join(snake_key)] = convert(nested_value)
+            return converted
+        if isinstance(value, list):
+            return [convert(item) for item in value]
+        return value
+
+    return convert(payload)
+
+
+def _load_request_manifest_entries(config: ModelBatchConfig) -> list[dict[str, Any]]:
+    """Read the request manifest rows for one launched batch run."""
+
+    manifest_path = config.batches.run_dir / config.batches.request_manifest_filename
+    return [json.loads(line) for line in manifest_path.read_text().splitlines() if line.strip()]
+
+
 def _parse_response_json(response_text: str) -> dict[str, Any]:
     """Parse the provider text output into the expected JSON response object."""
 
@@ -874,6 +1006,116 @@ def _parse_response_json(response_text: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("Model output must decode to a JSON object")
     return payload
+
+
+def _build_processing_error_record(
+    *,
+    provider_name: str,
+    custom_id: str,
+    comment_id: int | str,
+    response_text: str,
+    response_metadata: dict[str, Any] | None,
+    exception: Exception,
+) -> dict[str, Any]:
+    """Convert one processing exception into a structured error record."""
+
+    error_record = {
+        "custom_id": custom_id,
+        "comment_id": comment_id,
+        "response_text": response_text,
+    }
+    error_record.update(
+        _classify_processing_failure(
+            provider_name=provider_name,
+            response_text=response_text,
+            response_metadata=response_metadata,
+            exception=exception,
+        )
+    )
+    return error_record
+
+
+def _classify_processing_failure(
+    *,
+    provider_name: str,
+    response_text: str,
+    response_metadata: dict[str, Any] | None,
+    exception: Exception,
+) -> dict[str, Any]:
+    """Classify one processing failure so refusal cases are easy to inspect downstream."""
+
+    details: dict[str, Any] = {
+        "error": str(exception),
+        "error_type": "processing_error",
+    }
+    stop_reason = _response_stop_reason(response_metadata)
+    if stop_reason:
+        details["provider_stop_reason"] = stop_reason
+
+    if isinstance(exception, json.JSONDecodeError):
+        if _looks_like_model_refusal(
+            provider_name=provider_name,
+            response_text=response_text,
+            response_metadata=response_metadata,
+        ):
+            details["error_type"] = "model_refusal"
+            details["error"] = "Model returned an unstructured refusal instead of the expected JSON object"
+        else:
+            details["error_type"] = "invalid_json_response"
+            details["error"] = "Model returned non-JSON text instead of the expected JSON object"
+        details["parse_error"] = str(exception)
+
+    return details
+
+
+def _response_stop_reason(response_metadata: dict[str, Any] | None) -> str | None:
+    """Extract the provider stop reason from normalized response metadata when present."""
+
+    if not isinstance(response_metadata, dict):
+        return None
+    stop_reason = response_metadata.get("stop_reason")
+    if stop_reason is None:
+        return None
+    return str(stop_reason)
+
+
+def _looks_like_model_refusal(
+    *,
+    provider_name: str,
+    response_text: str,
+    response_metadata: dict[str, Any] | None,
+) -> bool:
+    """Heuristically identify when a provider returned a refusal rather than malformed JSON."""
+
+    stop_reason = _response_stop_reason(response_metadata)
+    if stop_reason == "refusal":
+        return True
+
+    if provider_name == "openai" and isinstance(response_metadata, dict):
+        choices = response_metadata.get("choices")
+        if isinstance(choices, list) and choices:
+            message = choices[0].get("message", {})
+            refusal = message.get("refusal")
+            if refusal:
+                return True
+
+    lowered_text = response_text.strip().lower()
+    refusal_markers = (
+        "i can't",
+        "i cannot",
+        "i wont",
+        "i won't",
+        "i'm not able",
+        "i am not able",
+        "unable to",
+        "not able to engage",
+        "not able to help",
+        "can't analyze this content",
+        "cannot analyze this content",
+        "can't help with",
+        "cannot help with",
+    )
+    return any(marker in lowered_text for marker in refusal_markers)
 
 
 def _apply_google_batch_reasoning(
@@ -896,14 +1138,55 @@ def _apply_google_batch_reasoning(
     if reasoning_effort is None:
         return payload
 
-    normalized_effort = reasoning_effort.strip().lower()
-    if normalized_effort == "low":
-        payload["thinking_config"] = {"thinking_budget": 128}
+    payload["thinking_config"] = {"thinking_level": reasoning_effort.strip().lower()}
+    return payload
+
+
+def _apply_anthropic_request_reasoning(
+    *,
+    request_params: dict[str, Any],
+    model: str,
+    reasoning_effort: str | None,
+    reasoning_budget_tokens: int | None,
+) -> dict[str, Any]:
+    """Apply Anthropic reasoning controls using the current model-specific guidance."""
+
+    payload = dict(request_params)
+    max_tokens = payload.get("max_tokens")
+    if reasoning_budget_tokens is not None and max_tokens is not None and reasoning_budget_tokens >= int(max_tokens):
+        raise ValueError("Anthropic reasoning.budget_tokens must be less than max_tokens")
+
+    if reasoning_effort is not None:
+        output_config = dict(payload.get("output_config", {}))
+        output_config["effort"] = reasoning_effort
+        payload["output_config"] = output_config
+
+    # Claude 4.6 models should use adaptive thinking with effort rather than manual budgets.
+    if _anthropic_prefers_adaptive_thinking(model):
+        if reasoning_budget_tokens is not None:
+            raise ValueError(
+                "Anthropic Claude 4.6 models should use reasoning.effort without "
+                "reasoning.budget_tokens; budget_tokens is deprecated for adaptive thinking"
+            )
+        if reasoning_effort is not None:
+            payload["thinking"] = {"type": "adaptive"}
         return payload
 
-    raise ValueError(
-        "Google Gemini batch requests currently support reasoning.effort='low' only; "
-        "use reasoning.budget_tokens for other Gemini thinking settings"
+    if reasoning_budget_tokens is not None:
+        payload["thinking"] = {
+            "type": "enabled",
+            "budget_tokens": reasoning_budget_tokens,
+        }
+
+    return payload
+
+
+def _anthropic_prefers_adaptive_thinking(model: str) -> bool:
+    """Return whether Anthropic recommends adaptive thinking for this model family."""
+
+    normalized_model = model.strip().lower()
+    return normalized_model.startswith("claude-opus-4-6") or normalized_model.startswith(
+        "claude-sonnet-4-6"
     )
 
 

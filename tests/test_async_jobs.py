@@ -181,6 +181,36 @@ def test_process_async_for_config_writes_partial_outputs(tmp_path: Path, monkeyp
     assert dataframe["comment_id"].tolist() == [1]
 
 
+def test_process_async_for_config_marks_refusals_as_model_refusal(tmp_path: Path, monkeypatch) -> None:
+    config = make_config(tmp_path, provider="anthropic", model_name="claude-haiku-4-5-20251001")
+    monkeypatch.setattr(
+        async_jobs,
+        "_load_batch_comments",
+        lambda config: [{"comment_id": 1, "text": "first"}],
+    )
+
+    paths = async_jobs._async_storage_paths(config)
+    paths.responses_dir.mkdir(parents=True, exist_ok=True)
+    async_jobs._write_json(
+        paths.responses_dir / "comment-1.json",
+        {
+            "custom_id": "comment-1",
+            "comment_id": 1,
+            "text": "first",
+            "provider_response": {"stop_reason": "end_turn"},
+            "response_text": "I can't analyze this content.",
+        },
+    )
+
+    outputs = process_async_for_config(config=config)
+
+    assert outputs.completed_count == 1
+    errors = [json.loads(line) for line in paths.processing_errors_path.read_text().splitlines() if line.strip()]
+    assert len(errors) == 1
+    assert errors[0]["error_type"] == "model_refusal"
+    assert errors[0]["provider_stop_reason"] == "end_turn"
+
+
 def test_process_async_combines_models_into_one_output(tmp_path: Path, monkeypatch) -> None:
     config_path = tmp_path / "multi.yaml"
     config_path.write_text(
@@ -237,3 +267,38 @@ batches:
     assert outputs.all_complete is True
     combined = pd.read_csv(outputs.combined_output_path)
     assert combined["judge_id"].tolist() == ["openai_one", "openai_two"]
+
+
+def test_build_async_provider_request_uses_adaptive_thinking_for_claude_46(tmp_path: Path) -> None:
+    config = make_config(tmp_path, provider="anthropic", model_name="claude-sonnet-4-6")
+    config = ModelBatchConfig(
+        name=config.name,
+        subset=config.subset,
+        limit=config.limit,
+        prompt=config.prompt,
+        model=BatchModelConfig(
+            provider="anthropic",
+            name="claude-sonnet-4-6",
+            id="anthropic_claude-sonnet-4-6",
+            max_tokens=4096,
+            params={"temperature": 0},
+            reasoning=BatchReasoningConfig(effort="medium"),
+        ),
+        batches=config.batches,
+    )
+
+    payload = _build_async_provider_request(
+        config=config,
+        system_prompt="Return JSON.",
+        user_prompt="comment text",
+    )
+
+    assert payload == {
+        "model": "claude-sonnet-4-6",
+        "system": "Return JSON.",
+        "messages": [{"role": "user", "content": "comment text"}],
+        "max_tokens": 4096,
+        "temperature": 0,
+        "output_config": {"effort": "medium"},
+        "thinking": {"type": "adaptive"},
+    }
