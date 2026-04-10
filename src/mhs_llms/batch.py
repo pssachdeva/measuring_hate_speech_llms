@@ -700,12 +700,12 @@ def _download_provider_results(config: ModelBatchConfig, batch_object: Any) -> l
         return [_to_jsonable(entry) for entry in client.messages.batches.results(batch_object.id)]
 
     if config.model.provider == "google":
-        output = getattr(batch_object, "output", None)
-        inlined_responses = getattr(output, "inlined_responses", None)
+        destination = getattr(batch_object, "dest", None)
+        inlined_responses = getattr(destination, "inlined_responses", None)
         if inlined_responses is None:
-            output_payload = _to_jsonable(output) if output is not None else {}
-            if isinstance(output_payload, dict):
-                inlined_responses = output_payload.get("inlined_responses") or output_payload.get(
+            destination_payload = _to_jsonable(destination) if destination is not None else {}
+            if isinstance(destination_payload, dict):
+                inlined_responses = destination_payload.get("inlined_responses") or destination_payload.get(
                     "inlinedResponses"
                 )
         if inlined_responses is not None:
