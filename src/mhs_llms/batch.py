@@ -54,6 +54,7 @@ PROVIDER_API_ENV_VARS = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "google": "GEMINI_API_KEY",
+    "xai": "XAI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
 }
 
@@ -1002,10 +1003,58 @@ def _parse_response_json(response_text: str) -> dict[str, Any]:
             cleaned_text = cleaned_text[4:]
         cleaned_text = cleaned_text.strip()
 
-    payload = json.loads(cleaned_text)
+    try:
+        payload = json.loads(cleaned_text)
+    except json.JSONDecodeError:
+        # Some providers occasionally prepend reasoning or wrap the JSON in
+        # extra text. Recover only when we can isolate one valid JSON object.
+        payload = json.loads(_extract_embedded_json_object(cleaned_text))
     if not isinstance(payload, dict):
         raise ValueError("Model output must decode to a JSON object")
     return payload
+
+
+def _extract_embedded_json_object(response_text: str) -> str:
+    """Extract one embedded JSON object from a text response with extra prose."""
+
+    fenced_json = _extract_fenced_json_block(response_text)
+    if fenced_json is not None:
+        return fenced_json
+
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(response_text):
+        if character != "{":
+            continue
+        try:
+            payload, end_index = decoder.raw_decode(response_text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            trailing_text = response_text[index + end_index :].strip()
+            if not trailing_text or trailing_text.startswith("```"):
+                return response_text[index : index + end_index]
+
+    raise json.JSONDecodeError("Expecting value", response_text, 0)
+
+
+def _extract_fenced_json_block(response_text: str) -> str | None:
+    """Return the contents of the first fenced JSON block when one is present."""
+
+    fence_start = response_text.find("```json")
+    if fence_start == -1:
+        fence_start = response_text.find("```")
+        if fence_start == -1:
+            return None
+
+    block_start = response_text.find("\n", fence_start)
+    if block_start == -1:
+        return None
+
+    fence_end = response_text.find("```", block_start + 1)
+    if fence_end == -1:
+        return None
+
+    return response_text[block_start + 1 : fence_end].strip()
 
 
 def _build_processing_error_record(
