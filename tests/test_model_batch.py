@@ -20,6 +20,7 @@ from mhs_llms.batch import (
     _batch_status,
     _build_processing_error_record,
     _parse_response_json,
+    _provider_api_key,
 )
 from mhs_llms.config import (
     BatchModelConfig,
@@ -40,6 +41,63 @@ def test_parse_response_json_handles_markdown_code_fences() -> None:
 
     assert payload["target_groups"] == ["I"]
     assert payload["hate_speech"] == "B"
+
+
+def test_parse_response_json_extracts_embedded_json_after_reasoning_text() -> None:
+    payload = _parse_response_json(
+        """thoughtful
+The user wants me to analyze this comment carefully.
+{
+  "target_groups": ["D", "G"],
+  "sentiment": "A",
+  "respect": "A",
+  "insult": "E",
+  "humiliate": "E",
+  "status": "A",
+  "dehumanize": "D",
+  "violence": "E",
+  "genocide": "A",
+  "attack_defend": "D",
+  "hate_speech": "A"
+}"""
+    )
+
+    assert payload["target_groups"] == ["D", "G"]
+    assert payload["hate_speech"] == "A"
+
+
+def test_provider_api_key_reads_xai_env_var(monkeypatch) -> None:
+    config = ModelBatchConfig(
+        name="test-xai",
+        subset="reference_set",
+        limit=1,
+        prompt=BatchPromptConfig(
+            system_prompt_path=Path("prompts/mhs_survey_v1.txt"),
+            user_prompt_template="",
+        ),
+        model=BatchModelConfig(
+            provider="xai",
+            name="grok-4-fast-reasoning",
+            id="xai:grok-4-fast-reasoning",
+            max_tokens=256,
+            params={},
+            reasoning=BatchReasoningConfig(),
+        ),
+        batches=BatchStorageConfig(
+            run_dir=Path("batches/test-xai"),
+            request_manifest_filename="request_manifest.jsonl",
+            provider_requests_filename="provider_requests.jsonl",
+            batch_metadata_filename="batch_job.json",
+            raw_results_filename="raw_results.jsonl",
+            processed_records_filename="processed_records.jsonl",
+            processed_csv_filename="processed_records.csv",
+            errors_filename="processing_errors.jsonl",
+        ),
+    )
+
+    monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
+
+    assert _provider_api_key(config) == "test-xai-key"
 
 
 def test_extract_openai_result_reads_message_text() -> None:
