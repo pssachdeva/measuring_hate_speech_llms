@@ -1,0 +1,105 @@
+name: reference_set_google
+description: |
+  Google Gemini reference-set experiment matrix for comparing current text
+  models on the MHS reference set as of April 9, 2026. Gemini 3 family models
+  use reasoning levels (`minimal`, `low`, `medium`, `high`) where supported.
+  Gemini 2.5 family models use thinking budgets. Gemini 2.5 Pro is pinned to a
+  2048-token thinking budget. Gemini 2.5 Flash and Flash-Lite include three
+  budget modes: disabled (`0`), fixed budget (`2048`), and dynamic (`-1`).
+
+subset: reference_set
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+models:
+  - id: google_gemini-2.5-pro
+    provider: google
+    name: gemini-2.5-pro
+    max_tokens: 2048
+
+  - id: google_gemini-2.5-flash
+    provider: google
+    name: gemini-2.5-flash
+    max_tokens: 2048
+
+  - id: google_gemini-3.1-pro-preview_low
+    provider: google
+    name: gemini-3.1-pro-preview
+    max_tokens: 2048
+    reasoning:
+      effort: low
+
+  - id: google_gemini-3.1-pro-preview_medium
+    provider: google
+    name: gemini-3.1-pro-preview
+    max_tokens: 2048
+    reasoning:
+      effort: medium
+
+  - id: google_gemini-3.1-pro-preview_high
+    provider: google
+    name: gemini-3.1-pro-preview
+    max_tokens: 2048
+    reasoning:
+      effort: high
+
+  - id: google_gemini-3-flash-preview_minimal
+    provider: google
+    name: gemini-3-flash-preview
+    max_tokens: 2048
+    reasoning:
+      effort: minimal
+
+  - id: google_gemini-3-flash-preview_low
+    provider: google
+    name: gemini-3-flash-preview
+    max_tokens: 2048
+    reasoning:
+      effort: low
+
+  - id: google_gemini-3-flash-preview_medium
+    provider: google
+    name: gemini-3-flash-preview
+    max_tokens: 2048
+    reasoning:
+      effort: medium
+
+  - id: google_gemini-3-flash-preview_high
+    provider: google
+    name: gemini-3-flash-preview
+    max_tokens: 2048
+    reasoning:
+      effort: high
+
+  - id: google_gemini-3.1-flash-lite-preview_minimal
+    provider: google
+    name: gemini-3.1-flash-lite-preview
+    max_tokens: 2048
+    reasoning:
+      effort: minimal
+
+  - id: google_gemini-3.1-flash-lite-preview_low
+    provider: google
+    name: gemini-3.1-flash-lite-preview
+    max_tokens: 2048
+    reasoning:
+      effort: low
+
+  - id: google_gemini-3.1-flash-lite-preview_medium
+    provider: google
+    name: gemini-3.1-flash-lite-preview
+    max_tokens: 2048
+    reasoning:
+      effort: medium
+
+  - id: google_gemini-3.1-flash-lite-preview_high
+    provider: google
+    name: gemini-3.1-flash-lite-preview
+    max_tokens: 2048
+    reasoning:
+      effort: high
+
+batches:
+  run_dir: batches/reference_set_google
+  combined_output_path: data/reference_set_google_processed.csv
