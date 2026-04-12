@@ -85,6 +85,114 @@ def test_launch_async_for_config_skips_existing_saved_queries(tmp_path: Path, mo
     assert calls == ["SOCIAL MEDIA COMMENT:\nfirst", "SOCIAL MEDIA COMMENT:\nsecond"]
 
 
+def test_launch_async_for_config_retries_invalid_outputs_until_valid(tmp_path: Path, monkeypatch) -> None:
+    config = make_config(tmp_path)
+    monkeypatch.setattr(
+        async_jobs,
+        "_load_batch_comments",
+        lambda config: [{"comment_id": 1, "text": "first"}],
+    )
+
+    responses = iter(
+        [
+            ({"id": "resp-1"}, "not json"),
+            (
+                {"id": "resp-2"},
+                '{"target_groups":["I"],"sentiment":"C","respect":"C","insult":"A","humiliate":"A",'
+                '"status":"C","dehumanize":"A","violence":"A","genocide":"A","attack_defend":"C","hate_speech":"B"}',
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(async_jobs, "_execute_async_request", lambda config, request_payload: next(responses))
+
+    outputs = launch_async_for_config(config)
+    paths = async_jobs._async_storage_paths(config)
+
+    saved_response = json.loads((paths.responses_dir / "comment-1.json").read_text())
+    request_errors = [json.loads(line) for line in paths.request_errors_path.read_text().splitlines() if line.strip()]
+
+    assert outputs.completed_count == 1
+    assert outputs.error_count == 1
+    assert saved_response["attempt_number"] == 2
+    assert request_errors[0]["attempt_number"] == 1
+    assert request_errors[0]["error_type"] == "invalid_json_response"
+
+
+def test_launch_async_for_config_retries_model_refusals(tmp_path: Path, monkeypatch) -> None:
+    config = make_config(tmp_path)
+    monkeypatch.setattr(
+        async_jobs,
+        "_load_batch_comments",
+        lambda config: [{"comment_id": 1, "text": "first"}],
+    )
+
+    responses = iter(
+        [
+            (
+                {"choices": [{"message": {"refusal": "safety", "content": None}}]},
+                "",
+            ),
+            (
+                {"id": "resp-2"},
+                '{"target_groups":["I"],"sentiment":"C","respect":"C","insult":"A","humiliate":"A",'
+                '"status":"C","dehumanize":"A","violence":"A","genocide":"A","attack_defend":"C","hate_speech":"B"}',
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(async_jobs, "_execute_async_request", lambda config, request_payload: next(responses))
+
+    outputs = launch_async_for_config(config)
+    paths = async_jobs._async_storage_paths(config)
+    request_errors = [json.loads(line) for line in paths.request_errors_path.read_text().splitlines() if line.strip()]
+
+    assert outputs.completed_count == 1
+    assert outputs.error_count == 1
+    assert request_errors[0]["error_type"] == "model_refusal"
+
+
+def test_launch_async_for_config_retries_existing_invalid_saved_response(tmp_path: Path, monkeypatch) -> None:
+    config = make_config(tmp_path)
+    monkeypatch.setattr(
+        async_jobs,
+        "_load_batch_comments",
+        lambda config: [{"comment_id": 1, "text": "first"}],
+    )
+
+    paths = async_jobs._async_storage_paths(config)
+    paths.responses_dir.mkdir(parents=True, exist_ok=True)
+    async_jobs._write_json(
+        paths.responses_dir / "comment-1.json",
+        {
+            "custom_id": "comment-1",
+            "comment_id": 1,
+            "text": "first",
+            "provider_response": {"id": "stale-invalid"},
+            "response_text": "still not json",
+        },
+    )
+
+    calls: list[int] = []
+
+    def fake_execute(config, request_payload):
+        calls.append(1)
+        return {"id": "resp-1"}, (
+            '{"target_groups":["I"],"sentiment":"C","respect":"C","insult":"A","humiliate":"A",'
+            '"status":"C","dehumanize":"A","violence":"A","genocide":"A","attack_defend":"C","hate_speech":"B"}'
+        )
+
+    monkeypatch.setattr(async_jobs, "_execute_async_request", fake_execute)
+
+    outputs = launch_async_for_config(config)
+    saved_response = json.loads((paths.responses_dir / "comment-1.json").read_text())
+
+    assert outputs.completed_count == 1
+    assert outputs.skipped_existing_count == 0
+    assert calls == [1]
+    assert saved_response["provider_response"]["id"] == "resp-1"
+
+
 def test_execute_async_request_uses_openrouter_openai_client(tmp_path: Path, monkeypatch) -> None:
     config = make_config(tmp_path, provider="openrouter", model_name="qwen/qwen3-max")
     config = ModelBatchConfig(
@@ -205,6 +313,7 @@ def test_process_async_for_config_marks_refusals_as_model_refusal(tmp_path: Path
     outputs = process_async_for_config(config=config)
 
     assert outputs.completed_count == 1
+    assert outputs.is_complete is False
     errors = [json.loads(line) for line in paths.processing_errors_path.read_text().splitlines() if line.strip()]
     assert len(errors) == 1
     assert errors[0]["error_type"] == "model_refusal"
@@ -267,6 +376,54 @@ batches:
     assert outputs.all_complete is True
     combined = pd.read_csv(outputs.combined_output_path)
     assert combined["judge_id"].tolist() == ["openai_one", "openai_two"]
+
+
+def test_launch_async_runs_every_model_in_shared_yaml(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "multi.yaml"
+    config_path.write_text(
+        f"""
+name: async_multi
+subset: reference_set
+
+prompt:
+  system_prompt_path: {tmp_path / "system.txt"}
+
+models:
+  - id: openai_one
+    provider: openai
+    name: gpt-5.4
+    max_tokens: 128
+  - id: openai_two
+    provider: openai
+    name: gpt-5.4-mini
+    max_tokens: 128
+
+batches:
+  run_dir: {tmp_path / "runs"}
+  combined_output_path: {tmp_path / "data" / "combined.csv"}
+""".strip()
+    )
+    (tmp_path / "system.txt").write_text("Return JSON.")
+
+    monkeypatch.setattr(
+        async_jobs,
+        "_load_batch_comments",
+        lambda config: [{"comment_id": 1, "text": "first"}],
+    )
+    monkeypatch.setattr(
+        async_jobs,
+        "_execute_async_request",
+        lambda config, request_payload: (
+            {"id": f"resp-{config.model.id}"},
+            '{"target_groups":["I"],"sentiment":"C","respect":"C","insult":"A","humiliate":"A",'
+            '"status":"C","dehumanize":"A","violence":"A","genocide":"A","attack_defend":"C","hate_speech":"B"}',
+        ),
+    )
+
+    outputs = async_jobs.launch_async(config_path=config_path)
+
+    assert outputs.all_complete is True
+    assert [output.model_id for output in outputs.outputs] == ["openai_one", "openai_two"]
 
 
 def test_build_async_provider_request_uses_adaptive_thinking_for_claude_46(tmp_path: Path) -> None:
