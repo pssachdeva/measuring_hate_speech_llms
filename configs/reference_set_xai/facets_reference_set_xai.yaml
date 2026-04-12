@@ -1,0 +1,27 @@
+annotations:
+  paths:
+    - data/reference_set_xai_processed.csv
+
+anchors:
+  comment_scores_path: facets/human_baseline/human_facets_scores.1.txt
+  item_scores_path: facets/human_baseline/human_facets_scores.3.txt
+
+output:
+  facets_run_dir: facets/reference_set_xai
+  facets_data_filename: reference_set_xai_data.tsv
+  facets_spec_filename: reference_set_xai_spec.txt
+  facets_score_filename: reference_set_xai_scores.txt
+  facets_output_filename: reference_set_xai_output.txt
+
+facets:
+  title: MHS Reference Set xAI LMs Anchored To Human Baseline
+  model: "?, ?, #, R"
+  noncenter: 2
+  positive: 1
+  arrange: N
+  subset_detection: No
+  delements:
+    - 1N
+    - 2N
+    - 3N
+  csv: Tab

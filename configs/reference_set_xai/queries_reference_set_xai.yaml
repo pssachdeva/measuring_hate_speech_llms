@@ -1,0 +1,41 @@
+name: reference_set_xai
+description: |
+  xAI Grok reference-set experiment matrix for comparing the Grok models that
+  currently work with this repository's xAI batch implementation as of April
+  10, 2026. These models were confirmed against the xAI Batch API path used by
+  this codebase. All runs use a 2048-token max output limit.
+
+subset: reference_set
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+models:
+  - id: xai_grok-3
+    provider: xai
+    name: grok-3
+    max_tokens: 2048
+
+  - id: xai_grok-4-fast-reasoning
+    provider: xai
+    name: grok-4-fast-reasoning
+    max_tokens: 2048
+
+  - id: xai_grok-4-fast-non-reasoning
+    provider: xai
+    name: grok-4-fast-non-reasoning
+    max_tokens: 2048
+
+  - id: xai_grok-4-1-fast-reasoning
+    provider: xai
+    name: grok-4-1-fast-reasoning
+    max_tokens: 2048
+
+  - id: xai_grok-4-1-fast-non-reasoning
+    provider: xai
+    name: grok-4-1-fast-non-reasoning
+    max_tokens: 2048
+
+batches:
+  run_dir: batches/reference_set_xai
+  combined_output_path: data/reference_set_xai_processed.csv
