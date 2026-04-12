@@ -73,6 +73,12 @@ class BatchStorageConfig:
 
 
 @dataclass(frozen=True)
+class AsyncRetryConfig:
+    max_attempts: int = 3
+    retry_delay_seconds: float = 0.0
+
+
+@dataclass(frozen=True)
 class ModelBatchConfig:
     name: str
     prompt: BatchPromptConfig
@@ -80,6 +86,7 @@ class ModelBatchConfig:
     batches: BatchStorageConfig
     subset: str = "reference_set"
     limit: Optional[int] = None
+    async_retries: AsyncRetryConfig = field(default_factory=AsyncRetryConfig)
 
 
 @dataclass(frozen=True)
@@ -158,6 +165,22 @@ def _parse_batch_model_config(model_data: dict[str, Any]) -> BatchModelConfig:
     )
 
 
+def _parse_async_retry_config(async_data: dict[str, Any] | None) -> AsyncRetryConfig:
+    """Parse optional async retry settings shared by one or more models."""
+
+    async_data = async_data or {}
+    max_attempts = int(async_data.get("max_attempts", 3))
+    retry_delay_seconds = float(async_data.get("retry_delay_seconds", 0.0))
+    if max_attempts < 1:
+        raise ValueError("async.max_attempts must be at least 1")
+    if retry_delay_seconds < 0:
+        raise ValueError("async.retry_delay_seconds must be non-negative")
+    return AsyncRetryConfig(
+        max_attempts=max_attempts,
+        retry_delay_seconds=retry_delay_seconds,
+    )
+
+
 def _parse_batch_storage_config(batch_data: dict[str, Any], run_dir: Path | None = None) -> BatchStorageConfig:
     """Parse batch storage paths and filenames from the config file."""
 
@@ -192,6 +215,7 @@ def _build_model_batch_config(
     batches: BatchStorageConfig,
     subset: str,
     limit: Optional[int],
+    async_retries: AsyncRetryConfig,
 ) -> ModelBatchConfig:
     """Build one fully resolved per-model batch config."""
 
@@ -202,6 +226,7 @@ def _build_model_batch_config(
         prompt=prompt,
         model=model,
         batches=batches,
+        async_retries=async_retries,
     )
 
 
@@ -270,6 +295,7 @@ def load_model_batch_configs(config_path: Path) -> tuple[ModelBatchConfig, ...]:
     prompt = _parse_batch_prompt_config(data["prompt"])
     subset = str(data.get("subset", "reference_set"))
     limit = int(data["limit"]) if data.get("limit") is not None else None
+    async_retries = _parse_async_retry_config(data.get("async"))
 
     # Legacy configs keep their exact run_dir. Multi-model configs treat run_dir as
     # a base directory and resolve one subdirectory per model id.
@@ -284,6 +310,7 @@ def load_model_batch_configs(config_path: Path) -> tuple[ModelBatchConfig, ...]:
                 batches=batches,
                 subset=subset,
                 limit=limit,
+                async_retries=async_retries,
             ),
         )
 
@@ -308,6 +335,7 @@ def load_model_batch_configs(config_path: Path) -> tuple[ModelBatchConfig, ...]:
                 batches=model_batches,
                 subset=subset,
                 limit=limit,
+                async_retries=async_retries,
             )
         )
     return tuple(model_configs)

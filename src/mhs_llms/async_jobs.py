@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import time
 from typing import Any
 
 from anthropic import Anthropic
@@ -23,6 +24,7 @@ from mhs_llms.batch import (
     _parse_response_json,
     _provider_api_key,
     _read_jsonl,
+    _looks_like_model_refusal,
     _to_jsonable,
     _utcnow,
     _write_json,
@@ -135,49 +137,73 @@ def launch_async_for_config(
 
     for request_row in request_rows:
         response_path = paths.responses_dir / f"{request_row['custom_id']}.json"
-        if _is_valid_async_response_file(response_path):
+        if _has_valid_async_annotation_response(config=config, request_row=request_row, response_path=response_path):
             skipped_existing_count += 1
             continue
 
-        try:
-            provider_response, response_text = _execute_async_request(
-                config=config,
-                request_payload=request_row["provider_request"],
-            )
-            _write_json(
-                response_path,
-                {
-                    "config_path": str(config_path.resolve()) if config_path is not None else None,
-                    "name": config.name,
-                    "model_id": _model_id(config),
-                    "provider": config.model.provider,
-                    "model": config.model.name,
-                    "judge_id": _judge_id(config),
-                    "custom_id": request_row["custom_id"],
-                    "comment_id": request_row["comment_id"],
-                    "text": request_row["text"],
-                    "system_prompt": request_row["system_prompt"],
-                    "user_prompt": request_row["user_prompt"],
-                    "provider_request": request_row["provider_request"],
-                    "provider_response": provider_response,
-                    "response_text": response_text,
-                    "completed_at": _utcnow(),
-                },
-            )
-        except Exception as exc:  # noqa: BLE001
-            request_errors.append(
-                {
-                    "custom_id": request_row["custom_id"],
-                    "comment_id": request_row["comment_id"],
-                    "error": str(exc),
-                    "provider_request": request_row["provider_request"],
-                    "recorded_at": _utcnow(),
-                }
-            )
+        for attempt_number in range(1, config.async_retries.max_attempts + 1):
+            provider_response: dict[str, Any] | None = None
+            response_text = ""
+            try:
+                provider_response, response_text = _execute_async_request(
+                    config=config,
+                    request_payload=request_row["provider_request"],
+                )
+                _validate_async_response(
+                    config=config,
+                    request_row=request_row,
+                    response_path=response_path,
+                    response_text=response_text,
+                    provider_response=provider_response,
+                )
+                _write_json(
+                    response_path,
+                    {
+                        "config_path": str(config_path.resolve()) if config_path is not None else None,
+                        "name": config.name,
+                        "model_id": _model_id(config),
+                        "provider": config.model.provider,
+                        "model": config.model.name,
+                        "judge_id": _judge_id(config),
+                        "custom_id": request_row["custom_id"],
+                        "comment_id": request_row["comment_id"],
+                        "text": request_row["text"],
+                        "system_prompt": request_row["system_prompt"],
+                        "user_prompt": request_row["user_prompt"],
+                        "provider_request": request_row["provider_request"],
+                        "provider_response": provider_response,
+                        "response_text": response_text,
+                        "attempt_number": attempt_number,
+                        "completed_at": _utcnow(),
+                    },
+                )
+                break
+            except Exception as exc:  # noqa: BLE001
+                request_errors.append(
+                    _build_async_request_error_record(
+                        config=config,
+                        request_row=request_row,
+                        response_text=response_text,
+                        provider_response=provider_response,
+                        exception=exc,
+                        attempt_number=attempt_number,
+                    )
+                )
+                if attempt_number == config.async_retries.max_attempts:
+                    break
+                logger.info(
+                    "Retrying async request {} for {} after failed attempt {} / {}",
+                    request_row["custom_id"],
+                    _model_id(config),
+                    attempt_number,
+                    config.async_retries.max_attempts,
+                )
+                if config.async_retries.retry_delay_seconds > 0:
+                    time.sleep(config.async_retries.retry_delay_seconds)
 
     _write_jsonl(paths.request_errors_path, request_errors)
 
-    completed_count = _count_valid_async_responses(paths.responses_dir)
+    completed_count = _count_valid_async_annotation_responses(config=config, request_rows=request_rows, responses_dir=paths.responses_dir)
     _write_json(
         paths.metadata_path,
         {
@@ -191,6 +217,8 @@ def launch_async_for_config(
             "completed_count": completed_count,
             "skipped_existing_count": skipped_existing_count,
             "request_error_count": len(request_errors),
+            "max_attempts": config.async_retries.max_attempts,
+            "retry_delay_seconds": config.async_retries.retry_delay_seconds,
             "responses_dir": str(paths.responses_dir),
             "last_launched_at": _utcnow(),
         },
@@ -348,7 +376,7 @@ def process_async_for_config(
         completed_count=completed_count,
         total_requests=len(manifest_rows),
         processing_error_count=len(processing_errors),
-        is_complete=completed_count == len(manifest_rows),
+        is_complete=completed_count == len(manifest_rows) and not processing_errors,
     )
 
 
@@ -500,7 +528,7 @@ def _execute_async_request(
         client = OpenAI(api_key=_provider_api_key(config))
         response = client.chat.completions.create(**request_payload)
         payload = _to_jsonable(response)
-        return payload, _coerce_openai_content_to_text(payload["choices"][0]["message"]["content"])
+        return payload, _coerce_async_openai_text(provider_name=provider, payload=payload)
 
     if provider == "openrouter":
         client = OpenAI(
@@ -514,13 +542,22 @@ def _execute_async_request(
             openrouter_payload["extra_body"] = {"reasoning": reasoning_payload}
         response = client.chat.completions.create(**openrouter_payload)
         payload = _to_jsonable(response)
-        return payload, _coerce_openai_content_to_text(payload["choices"][0]["message"]["content"])
+        return payload, _coerce_async_openai_text(provider_name=provider, payload=payload)
 
     if provider == "anthropic":
         client = Anthropic(api_key=_provider_api_key(config))
         response = client.messages.create(**request_payload)
         payload = _to_jsonable(response)
-        return payload, _coerce_anthropic_content_to_text(payload.get("content", []))
+        try:
+            return payload, _coerce_anthropic_content_to_text(payload.get("content", []))
+        except ValueError:
+            if _looks_like_model_refusal(
+                provider_name=provider,
+                response_text="",
+                response_metadata=payload,
+            ):
+                return payload, ""
+            raise
 
     if provider == "google":
         client = genai.Client(api_key=_provider_api_key(config))
@@ -554,6 +591,129 @@ def _count_valid_async_responses(responses_dir: Path) -> int:
     if not responses_dir.exists():
         return 0
     return sum(1 for path in responses_dir.glob("*.json") if _is_valid_async_response_file(path))
+
+
+def _count_valid_async_annotation_responses(
+    config: ModelBatchConfig,
+    request_rows: list[dict[str, Any]],
+    responses_dir: Path,
+) -> int:
+    """Count saved responses that already validate as usable MHS annotations."""
+
+    request_row_by_custom_id = {row["custom_id"]: row for row in request_rows}
+    valid_count = 0
+    for response_path in responses_dir.glob("*.json"):
+        custom_id = response_path.stem
+        request_row = request_row_by_custom_id.get(custom_id)
+        if request_row is None:
+            continue
+        if _has_valid_async_annotation_response(
+            config=config,
+            request_row=request_row,
+            response_path=response_path,
+        ):
+            valid_count += 1
+    return valid_count
+
+
+def _has_valid_async_annotation_response(
+    config: ModelBatchConfig,
+    request_row: dict[str, Any],
+    response_path: Path,
+) -> bool:
+    """Return whether one saved async response already parses into a valid annotation."""
+
+    if not _is_valid_async_response_file(response_path):
+        return False
+    response_payload = json.loads(response_path.read_text())
+    try:
+        _validate_async_response(
+            config=config,
+            request_row=request_row,
+            response_path=response_path,
+            response_text=str(response_payload.get("response_text", "")),
+            provider_response=response_payload.get("provider_response"),
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def _validate_async_response(
+    *,
+    config: ModelBatchConfig,
+    request_row: dict[str, Any],
+    response_path: Path,
+    response_text: str,
+    provider_response: dict[str, Any] | None,
+) -> None:
+    """Validate one async provider response against the shared MHS schema."""
+
+    payload = _parse_response_json(response_text)
+    normalize_model_annotation(
+        comment_id=int(request_row["comment_id"]),
+        judge_id=_judge_id(config),
+        text=str(request_row["text"]),
+        payload=payload,
+        metadata={
+            "provider": config.model.provider,
+            "model": config.model.name,
+            "custom_id": request_row["custom_id"],
+            "response_path": str(response_path),
+            "provider_response": provider_response,
+        },
+    )
+
+
+def _build_async_request_error_record(
+    *,
+    config: ModelBatchConfig,
+    request_row: dict[str, Any],
+    response_text: str,
+    provider_response: dict[str, Any] | None,
+    exception: Exception,
+    attempt_number: int,
+) -> dict[str, Any]:
+    """Record one failed async attempt with parsing-aware error classification."""
+
+    if provider_response is not None:
+        error_record = _build_processing_error_record(
+            provider_name=config.model.provider,
+            custom_id=request_row["custom_id"],
+            comment_id=request_row["comment_id"],
+            response_text=response_text,
+            response_metadata=provider_response,
+            exception=exception,
+        )
+    else:
+        error_record = {
+            "custom_id": request_row["custom_id"],
+            "comment_id": request_row["comment_id"],
+            "error": str(exception),
+            "error_type": "request_error",
+            "response_text": response_text,
+        }
+    error_record["attempt_number"] = attempt_number
+    error_record["provider_request"] = request_row["provider_request"]
+    error_record["recorded_at"] = _utcnow()
+    if provider_response is not None:
+        error_record["provider_response"] = provider_response
+    return error_record
+
+
+def _coerce_async_openai_text(provider_name: str, payload: dict[str, Any]) -> str:
+    """Extract OpenAI-compatible text while preserving explicit refusals for retry handling."""
+
+    try:
+        return _coerce_openai_content_to_text(payload["choices"][0]["message"]["content"])
+    except ValueError:
+        if _looks_like_model_refusal(
+            provider_name=provider_name,
+            response_text="",
+            response_metadata=payload,
+        ):
+            return ""
+        raise
 
 
 def _openai_messages(system_prompt: str, user_prompt: str) -> list[dict[str, Any]]:

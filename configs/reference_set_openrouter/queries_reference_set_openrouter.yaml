@@ -1,0 +1,24 @@
+name: reference_set_openrouter
+description: |
+  OpenRouter models.
+
+subset: reference_set
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+async:
+  max_attempts: 5
+  retry_delay_seconds: 2.0
+
+models:
+  - id: openrouter_google_gemma-4-26b-a4b-it_limit1
+    provider: openrouter
+    name: google/gemma-4-26b-a4b-it
+    max_tokens: 1024
+    params:
+      temperature: 0.7
+
+batches:
+  run_dir: batches/reference_set_openrouter
+  combined_output_path: data/reference_set_openrouter_processed.csv

@@ -5,8 +5,30 @@ import pytest
 from mhs_llms.config import load_model_batch_config, load_model_batch_configs
 
 
-def test_load_model_batch_config_resolves_paths_and_params() -> None:
-    config = load_model_batch_config(Path("configs/queries/reference_oai_gpt54_low.yaml"))
+def test_load_model_batch_config_resolves_paths_and_params(tmp_path: Path) -> None:
+    config_path = tmp_path / "openai_single.yaml"
+    config_path.write_text(
+        """
+name: openai_gpt-5.4_low
+subset: reference_set
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+model:
+  id: openai_gpt-5.4_low
+  provider: openai
+  name: gpt-5.4
+  max_tokens: 1000
+  reasoning:
+    effort: low
+
+batches:
+  run_dir: batches/openai_gpt-5.4_low
+""".strip()
+    )
+
+    config = load_model_batch_config(config_path)
 
     assert config.name == "openai_gpt-5.4_low"
     assert config.model.provider == "openai"
@@ -21,8 +43,30 @@ def test_load_model_batch_config_resolves_paths_and_params() -> None:
     assert config.batches.run_dir == (Path.cwd() / "batches" / "openai_gpt-5.4_low").resolve()
 
 
-def test_load_model_batch_config_supports_anthropic_shape() -> None:
-    config = load_model_batch_config(Path("configs/queries/reference_anthropic_claude-sonnet-4-6.yaml"))
+def test_load_model_batch_config_supports_anthropic_shape(tmp_path: Path) -> None:
+    config_path = tmp_path / "anthropic_single.yaml"
+    config_path.write_text(
+        """
+name: anthropic_claude-sonnet-4-6_reference
+subset: reference_set
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+model:
+  id: anthropic_claude-sonnet-4-6_reference
+  provider: anthropic
+  name: claude-sonnet-4-6
+  max_tokens: 4096
+  reasoning:
+    effort: medium
+
+batches:
+  run_dir: batches/anthropic_claude-sonnet-4-6_reference
+""".strip()
+    )
+
+    config = load_model_batch_config(config_path)
 
     assert config.name == "anthropic_claude-sonnet-4-6_reference"
     assert config.model.provider == "anthropic"
@@ -109,3 +153,57 @@ batches:
 
     with pytest.raises(ValueError, match="more than one model"):
         load_model_batch_config(config_path)
+
+
+def test_load_model_batch_configs_supports_checked_in_openrouter_smoke_config() -> None:
+    configs = load_model_batch_configs(Path("configs/tests/test_openrouter_gemma4_limit1.yaml"))
+
+    assert len(configs) == 1
+    config = configs[0]
+    assert config.name == "openrouter_google_gemma-4-26b-a4b-it_limit1"
+    assert config.model.provider == "openrouter"
+    assert config.model.name == "google/gemma-4-26b-a4b-it"
+    assert config.model.max_tokens == 512
+    assert config.model.params == {"temperature": 0}
+    assert config.prompt.system_prompt_path == (Path.cwd() / "prompts" / "mhs_survey_v1.txt").resolve()
+    assert config.limit == 1
+    assert config.async_retries.max_attempts == 3
+    assert config.async_retries.retry_delay_seconds == 0.0
+    assert config.batches.run_dir == (
+        Path.cwd() / "batches" / "openrouter_gemma4_limit1" / config.model.id
+    ).resolve()
+    assert config.batches.combined_output_path == (
+        Path.cwd() / "data" / "openrouter_gemma4_limit1_processed.csv"
+    ).resolve()
+
+
+def test_load_model_batch_configs_parses_shared_async_retry_settings(tmp_path: Path) -> None:
+    config_path = tmp_path / "multi_with_async.yaml"
+    config_path.write_text(
+        """
+name: multi_with_async
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+async:
+  max_attempts: 5
+  retry_delay_seconds: 2.5
+
+models:
+  - id: one
+    provider: openai
+    name: gpt-5.4
+  - id: two
+    provider: openai
+    name: gpt-5.4-mini
+
+batches:
+  run_dir: batches/multi_with_async
+""".strip()
+    )
+
+    configs = load_model_batch_configs(config_path)
+
+    assert len(configs) == 2
+    assert all(config.async_retries.max_attempts == 5 for config in configs)
+    assert all(config.async_retries.retry_delay_seconds == 2.5 for config in configs)
