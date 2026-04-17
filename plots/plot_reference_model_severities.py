@@ -15,6 +15,9 @@ DEFAULT_HUMAN_PATH = FACETS_DIR / "human_baseline" / "human_facets_scores.2.txt"
 DEFAULT_JUDGES_PATHS = [
     FACETS_DIR / "reference_set_openai" / "judges_scores.csv",
     FACETS_DIR / "reference_set_anthropic" / "judges_scores.csv",
+    FACETS_DIR / "reference_set_google" / "judges_scores.csv",
+    FACETS_DIR / "reference_set_open_large" / "judges_scores.csv",
+    FACETS_DIR / "reference_set_xai" / "judges_scores.csv",
 ]
 DEFAULT_OUTPUT_PATH = ARTIFACTS_DIR / "reference_set_model_severities.png"
 
@@ -53,13 +56,63 @@ def main() -> None:
     parser.add_argument(
         "--title",
         dest="title",
-        default="Human Severity Distribution and Model Judge Severities",
-        help="Figure title.",
+        default="",
+        help="Optional figure title.",
+    )
+    parser.add_argument(
+        "--figure-width",
+        dest="figure_width",
+        type=float,
+        default=8.5,
+        help="Figure width in inches.",
+    )
+    parser.add_argument(
+        "--figure-height",
+        dest="figure_height",
+        type=float,
+        default=None,
+        help="Optional figure height in inches. Defaults to a model-count-based height.",
+    )
+    parser.add_argument(
+        "--legend-font-size",
+        dest="legend_font_size",
+        type=float,
+        default=None,
+        help="Optional legend font size.",
+    )
+    parser.add_argument(
+        "--bottom-label-font-size",
+        dest="bottom_label_font_size",
+        type=float,
+        default=9.0,
+        help="Font size for model labels in the bottom panel.",
+    )
+    parser.add_argument(
+        "--value-label-font-size",
+        dest="value_label_font_size",
+        type=float,
+        default=8.5,
+        help="Font size for numeric severity labels in the bottom panel.",
+    )
+    parser.add_argument(
+        "--x-min",
+        dest="x_min",
+        type=float,
+        default=-1.5,
+        help="Minimum x-axis value.",
+    )
+    parser.add_argument(
+        "--x-max",
+        dest="x_max",
+        type=float,
+        default=1.5,
+        help="Maximum x-axis value.",
     )
     args = parser.parse_args()
 
     human_path = Path(args.human_path).resolve()
-    judges_paths = [Path(path).resolve() for path in (args.judges_paths or [str(path) for path in DEFAULT_JUDGES_PATHS])]
+    default_judges_paths = [str(path) for path in DEFAULT_JUDGES_PATHS]
+    judges_paths = [Path(path).resolve() for path in (args.judges_paths or default_judges_paths)]
     output_path = Path(args.output_path).resolve()
 
     human_severity_frame = load_human_judge_severities(human_path)
@@ -69,6 +122,13 @@ def main() -> None:
         model_severity_frame=model_severity_frame,
         output_path=output_path,
         title=args.title,
+        figure_width=args.figure_width,
+        figure_height=args.figure_height,
+        legend_font_size=args.legend_font_size,
+        bottom_label_font_size=args.bottom_label_font_size,
+        value_label_font_size=args.value_label_font_size,
+        x_min=args.x_min,
+        x_max=args.x_max,
     )
 
     print(f"human_file={human_path}")
