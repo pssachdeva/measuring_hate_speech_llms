@@ -6,11 +6,24 @@ PROVIDER_DISPLAY_NAMES = {
     "openai": "OpenAI",
     "google": "Google",
     "deepseek": "DeepSeek",
+    "minimax": "MiniMax",
+    "moonshotai": "Moonshot AI",
+    "openrouter": "OpenRouter",
+    "qwen": "Qwen",
+    "xiaomi": "Xiaomi",
     "xai": "xAI",
+    "zai": "Z.ai",
     "unknown": "Other",
 }
 
 _PROVIDER_PREFIX_TO_SLUG = {
+    "openrouter_deepseek_": "deepseek",
+    "openrouter_minimax_": "minimax",
+    "openrouter_moonshotai_": "moonshotai",
+    "openrouter_qwen_": "qwen",
+    "openrouter_xiaomi_": "xiaomi",
+    "openrouter_z-ai_": "zai",
+    "openrouter_": "openrouter",
     "anthropic_": "anthropic",
     "openai_": "openai",
     "google_": "google",
@@ -31,10 +44,22 @@ _TOKEN_OVERRIDES = {
     "low": "Low",
     "medium": "Medium",
     "high": "High",
+    "minimal": "Minimal",
     "xhigh": "XHigh",
     "opus": "Opus",
     "pro": "Pro",
+    "qwen": "Qwen",
+    "reasoning": "Reasoning",
     "sonnet": "Sonnet",
+}
+
+_MODEL_LABEL_OVERRIDES = {
+    "openrouter_deepseek_deepseek-v3.2": "DeepSeek V3.2",
+    "openrouter_minimax_minimax-m2.5": "MiniMax M2.5",
+    "openrouter_moonshotai_kimi-k2.5": "Kimi K2.5",
+    "openrouter_qwen_qwen3.5-122b-a10b": "Qwen3.5 122B A10B",
+    "openrouter_xiaomi_mimo-v2-pro": "MiMo V2 Pro",
+    "openrouter_z-ai_glm-5-turbo": "GLM-5 Turbo",
 }
 
 
@@ -57,7 +82,22 @@ def provider_display_name(provider_slug: str) -> str:
 def model_id_to_label(model_id: str) -> str:
     """Convert one internal model id into a concise plot label."""
 
+    return _model_id_to_label(model_id=model_id, include_reasoning=True)
+
+
+def model_id_to_plot_label(model_id: str) -> str:
+    """Convert one internal model id into a plot label without reasoning effort."""
+
+    return _model_id_to_label(model_id=model_id, include_reasoning=False)
+
+
+def _model_id_to_label(model_id: str, include_reasoning: bool) -> str:
+    """Convert one model id into a label, optionally including reasoning effort."""
+
     normalized = model_id.strip()
+    if normalized in _MODEL_LABEL_OVERRIDES:
+        return _MODEL_LABEL_OVERRIDES[normalized]
+
     provider_slug = infer_provider(normalized)
     provider_prefix = next(
         (prefix for prefix, slug in _PROVIDER_PREFIX_TO_SLUG.items() if slug == provider_slug),
@@ -68,7 +108,7 @@ def model_id_to_label(model_id: str) -> str:
 
     base_name, reasoning_suffix = _split_reasoning_suffix(normalized)
     base_label = _format_base_name(base_name)
-    if reasoning_suffix is None:
+    if reasoning_suffix is None or not include_reasoning:
         return base_label
     return f"{base_label} ({_TOKEN_OVERRIDES.get(reasoning_suffix, reasoning_suffix.title())})"
 
@@ -81,7 +121,7 @@ def _split_reasoning_suffix(model_name: str) -> tuple[str, str | None]:
         return model_name, None
 
     suffix = parts[-1]
-    if suffix not in {"none", "low", "medium", "high", "xhigh"}:
+    if suffix not in {"none", "low", "medium", "high", "minimal", "xhigh"}:
         return model_name, None
     return "_".join(parts[:-1]), suffix
 

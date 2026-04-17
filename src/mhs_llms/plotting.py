@@ -10,12 +10,18 @@ import pandas as pd
 
 
 PROVIDER_COLORS = {
-    "anthropic": "#4C9CC4",
-    "openai": "#51B26D",
-    "google": "#5E8DE0",
-    "deepseek": "#9A63C5",
-    "xai": "#E24A63",
-    "unknown": "#7A7A7A",
+    "anthropic": "#d4a574",
+    "openai": "#10a37f",
+    "google": "#4285f4",
+    "deepseek": "#7c3aed",
+    "minimax": "#e11d48",
+    "moonshotai": "#0ea5e9",
+    "openrouter": "#888888",
+    "qwen": "#f59e0b",
+    "xiaomi": "#ff6900",
+    "xai": "#888888",
+    "zai": "#14b8a6",
+    "unknown": "#888888",
 }
 
 

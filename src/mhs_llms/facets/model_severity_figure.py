@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from mhs_llms.facets.postprocess import parse_facets_score_file
-from mhs_llms.labels import infer_provider, model_id_to_label, provider_display_name
+from mhs_llms.labels import infer_provider, model_id_to_plot_label, provider_display_name
 from mhs_llms.plotting import (
     apply_plot_style,
     build_gaussian_kde_curve,
@@ -45,7 +45,7 @@ def load_model_judge_severities(judges_paths: list[Path]) -> pd.DataFrame:
 
     combined["provider"] = combined["facet_label"].map(infer_provider)
     combined["provider_label"] = combined["provider"].map(provider_display_name)
-    combined["display_label"] = combined["facet_label"].map(model_id_to_label)
+    combined["display_label"] = combined["facet_label"].map(model_id_to_plot_label)
 
     # Sort from the highest estimated severity to the lowest for top-to-bottom plotting.
     combined = combined.sort_values(["measure", "display_label"], ascending=[False, True], kind="stable")
@@ -57,7 +57,14 @@ def plot_model_severity_figure(
     human_severity_frame: pd.DataFrame,
     model_severity_frame: pd.DataFrame,
     output_path: Path,
-    title: str = "Human Severity Distribution and Model Judge Severities",
+    title: str = "",
+    figure_width: float = 8.5,
+    figure_height: float | None = None,
+    legend_font_size: float | None = None,
+    bottom_label_font_size: float = 9.0,
+    value_label_font_size: float = 8.5,
+    x_min: float | None = None,
+    x_max: float | None = None,
 ) -> Path:
     """Plot the requested two-panel severity figure and save it."""
 
@@ -74,22 +81,31 @@ def plot_model_severity_figure(
     human_min = min(human_measures)
     human_max = max(human_measures)
     plot_min, plot_max = _build_plot_bounds([human_min, model_min], [human_max, model_max])
+    if x_min is not None:
+        plot_min = x_min
+    if x_max is not None:
+        plot_max = x_max
 
     x_values, y_values = build_gaussian_kde_curve(human_measures, plot_min, plot_max)
     y_positions = list(range(len(model_severity_frame)))
     colors = [get_provider_color(provider) for provider in model_severity_frame["provider"].tolist()]
 
-    figure_height = max(9.5, len(model_severity_frame) * 0.34 + 3.8)
+    if figure_height is None:
+        figure_height = len(model_severity_frame) * 0.25 + 3.0
     figure, (top_axis, bottom_axis) = plt.subplots(
         2,
         1,
-        figsize=(11.5, figure_height),
+        figsize=(figure_width, figure_height),
         sharex=True,
-        gridspec_kw={"height_ratios": [1.2, 1.9], "hspace": 0.02},
+        gridspec_kw={"height_ratios": [0.9, 1.9], "hspace": 0.02},
     )
 
-    top_axis.plot(x_values, y_values, color="#8CA2CF", linewidth=2.6, zorder=2)
-    top_axis.fill_between(x_values, y_values, color="#8CA2CF", alpha=0.32, zorder=1)
+    human_distribution_color = "#8CA2CF"
+    axis_background_color = "#F7F7F7"
+    top_axis.set_facecolor(axis_background_color)
+    bottom_axis.set_facecolor(axis_background_color)
+    top_axis.plot(x_values, y_values, color=human_distribution_color, linewidth=2.6, zorder=2)
+    top_axis.fill_between(x_values, y_values, color=human_distribution_color, alpha=0.32, zorder=1)
     for row in model_severity_frame.itertuples(index=False):
         top_axis.axvline(
             row.measure,
@@ -100,9 +116,14 @@ def plot_model_severity_figure(
             zorder=3,
         )
 
-    top_axis.set_ylabel(format_plot_text("Density"))
-    top_axis.set_title(format_plot_text(title))
+    top_axis.set_ylabel(format_plot_text("Human Annotator\nSeverity Density"), fontsize=8)
+    if title:
+        top_axis.set_title(format_plot_text(title))
+    top_axis.axvline(0.0, color="#202020", linewidth=1.1, zorder=4)
+    top_axis.set_ylim(bottom=0.0)
     top_axis.grid(alpha=0.18)
+    top_axis.tick_params(axis="y", labelsize=8)
+    top_axis.tick_params(axis="x", which="both", bottom=False, labelbottom=False)
 
     bar_container = bottom_axis.barh(
         y_positions,
@@ -117,35 +138,50 @@ def plot_model_severity_figure(
     _ = bar_container
 
     bottom_axis.set_yticks(y_positions)
-    bottom_axis.set_yticklabels(format_plot_text(model_severity_frame["display_label"].tolist()))
-    bottom_axis.yaxis.tick_right()
+    bottom_axis.set_yticklabels([])
     bottom_axis.tick_params(
         axis="y",
         which="both",
-        labelright=True,
-        labelleft=False,
         right=False,
         left=False,
-        pad=10,
-        labelsize=9,
     )
+    bottom_axis.tick_params(axis="x", labelsize=8)
     bottom_axis.invert_yaxis()
+    bottom_axis.set_ylim(len(model_severity_frame) - 0.1, -0.90)
     bottom_axis.axvline(0.0, color="#444444", linewidth=1.1)
     bottom_axis.set_xlabel(format_plot_text("Severity"))
+    bottom_axis.set_ylabel(format_plot_text("Models"), fontsize=10)
+    bottom_axis.yaxis.labelpad = -8
     bottom_axis.grid(axis="x", alpha=0.18)
 
-    value_pad = (plot_max - plot_min) * 0.012
+    label_pad = (plot_max - plot_min) * 0.012
+    value_pad = (plot_max - plot_min) * 0.020
     for y_position, row in zip(y_positions, model_severity_frame.itertuples(index=False)):
         value = float(row.measure)
-        value_x = value - value_pad if value <= 0.0 else value + value_pad
+        standard_error = float(row.s_e)
+        model_label_x = label_pad if value <= 0.0 else -label_pad
+        model_label_alignment = "left" if value <= 0.0 else "right"
+        value_x = (
+            value - standard_error - value_pad
+            if value <= 0.0
+            else value + standard_error + value_pad
+        )
         value_alignment = "right" if value <= 0.0 else "left"
+        bottom_axis.text(
+            model_label_x,
+            y_position,
+            format_plot_text(row.display_label),
+            va="center",
+            ha=model_label_alignment,
+            fontsize=bottom_label_font_size,
+        )
         bottom_axis.text(
             value_x,
             y_position,
             format_plot_text(f"{value:.3f}"),
             va="center",
             ha=value_alignment,
-            fontsize=8.5,
+            fontsize=value_label_font_size,
         )
 
     legend_handles = [
@@ -156,31 +192,44 @@ def plot_model_severity_figure(
         )
         for provider_slug in _provider_order(model_severity_frame["provider"].tolist())
     ]
-    top_axis.legend(handles=legend_handles, loc="upper right", frameon=True)
+    bottom_axis.legend(
+        handles=legend_handles,
+        loc="upper right",
+        frameon=True,
+        fontsize=legend_font_size,
+    )
 
-    x_padding = max((plot_max - plot_min) * 0.06, 0.10)
+    x_padding = 0.0 if x_min is not None or x_max is not None else max((plot_max - plot_min) * 0.06, 0.10)
     bottom_axis.set_xlim(plot_min - x_padding, plot_max + x_padding)
     top_axis.set_xlim(plot_min - x_padding, plot_max + x_padding)
-
-    top_axis.text(
-        -0.07,
-        0.5,
-        format_plot_text("Human severities"),
-        rotation=90,
-        va="center",
+    direction_label_box = {
+        "boxstyle": "round,pad=0.42,rounding_size=0.28",
+        "facecolor": "#FAF6F1",
+        "edgecolor": "#E7DCCF",
+        "linewidth": 0.8,
+        "alpha": 0.95,
+    }
+    bottom_axis.text(
+        plot_min - x_padding,
+        -0.10,
+        format_plot_text("More Likely to\nLabel as Hateful"),
+        transform=bottom_axis.get_xaxis_transform(),
         ha="center",
-        transform=top_axis.transAxes,
-        fontsize=11,
+        va="top",
+        fontsize=8,
+        clip_on=False,
+        bbox=direction_label_box,
     )
     bottom_axis.text(
-        -0.07,
-        0.5,
-        format_plot_text("Model severities"),
-        rotation=90,
-        va="center",
+        plot_max + x_padding,
+        -0.10,
+        format_plot_text("Less Likely to\nLabel as Hateful"),
+        transform=bottom_axis.get_xaxis_transform(),
         ha="center",
-        transform=bottom_axis.transAxes,
-        fontsize=11,
+        va="top",
+        fontsize=8,
+        clip_on=False,
+        bbox=direction_label_box,
     )
 
     figure.align_ylabels([top_axis, bottom_axis])
@@ -222,6 +271,19 @@ def _build_plot_bounds(min_values: list[float], max_values: list[float]) -> tupl
 def _provider_order(provider_slugs: list[str]) -> list[str]:
     """Return a stable provider order for legends."""
 
-    preferred_order = ["anthropic", "openai", "google", "deepseek", "xai", "unknown"]
+    preferred_order = [
+        "anthropic",
+        "openai",
+        "google",
+        "xai",
+        "deepseek",
+        "minimax",
+        "moonshotai",
+        "qwen",
+        "xiaomi",
+        "zai",
+        "openrouter",
+        "unknown",
+    ]
     seen = set(provider_slugs)
     return [provider_slug for provider_slug in preferred_order if provider_slug in seen]
