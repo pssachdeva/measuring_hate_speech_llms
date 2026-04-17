@@ -1,0 +1,62 @@
+name: reference_set_open_large
+description: |
+  OpenRouter reference-set experiment matrix for larger current text models on
+  the MHS reference set as of April 13, 2026. This set focuses on large
+  non-OpenAI models that fit the comment-rating workflow in this repository.
+
+subset: reference_set
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+async:
+  max_attempts: 5
+  retry_delay_seconds: 2.0
+
+models:
+  - id: openrouter_deepseek_deepseek-v3.2
+    provider: openrouter
+    name: deepseek/deepseek-v3.2
+    max_tokens: 512
+    params:
+      temperature: 0.5
+
+  - id: openrouter_qwen_qwen3.5-122b-a10b
+    provider: openrouter
+    name: qwen/qwen3.5-122b-a10b
+    max_tokens: 512
+    params:
+      temperature: 0.5
+
+  - id: openrouter_xiaomi_mimo-v2-pro
+    provider: openrouter
+    name: xiaomi/mimo-v2-pro
+    max_tokens: 4096
+    params:
+      temperature: 0.5
+
+  - id: openrouter_minimax_minimax-m2.5
+    provider: openrouter
+    name: minimax/minimax-m2.5
+    max_tokens: 4096
+    params:
+      temperature: 0.5
+
+  - id: openrouter_z-ai_glm-5-turbo
+    provider: openrouter
+    name: z-ai/glm-5-turbo
+    max_tokens: 4096
+    params:
+      temperature: 0.5
+
+  - id: openrouter_moonshotai_kimi-k2.5
+    provider: openrouter
+    name: moonshotai/kimi-k2.5
+    max_tokens: 4096
+    params:
+      temperature: 0.5
+
+
+batches:
+  run_dir: batches/reference_set_open_large
+  combined_output_path: data/reference_set_open_large_processed.csv
