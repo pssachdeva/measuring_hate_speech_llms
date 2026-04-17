@@ -11,6 +11,7 @@ from google import genai
 from loguru import logger
 from openai import OpenAI
 import pandas as pd
+from tqdm.auto import tqdm
 
 from mhs_llms.batch import (
     _apply_anthropic_request_reasoning,
@@ -110,9 +111,14 @@ def launch_async(config_path: Path) -> LaunchAsyncAllOutputs:
     """Issue one sequential provider request per comment for every configured model."""
 
     config_path = config_path.resolve()
+    configs = load_model_batch_configs(config_path)
     outputs = tuple(
-        launch_async_for_config(config=config, config_path=config_path)
-        for config in load_model_batch_configs(config_path)
+        launch_async_for_config(
+            config=config,
+            config_path=config_path,
+            show_progress=True,
+        )
+        for config in configs
     )
     return LaunchAsyncAllOutputs(
         outputs=outputs,
@@ -123,6 +129,7 @@ def launch_async(config_path: Path) -> LaunchAsyncAllOutputs:
 def launch_async_for_config(
     config: ModelBatchConfig,
     config_path: Path | None = None,
+    show_progress: bool = False,
 ) -> LaunchAsyncOutputs:
     """Issue sequential provider requests for one model and save one file per successful query."""
 
@@ -134,72 +141,91 @@ def launch_async_for_config(
 
     request_errors: list[dict[str, Any]] = []
     skipped_existing_count = 0
+    progress_bar = (
+        tqdm(
+            total=len(request_rows),
+            desc=_model_id(config),
+            unit="req",
+            leave=True,
+        )
+        if show_progress
+        else None
+    )
 
-    for request_row in request_rows:
-        response_path = paths.responses_dir / f"{request_row['custom_id']}.json"
-        if _has_valid_async_annotation_response(config=config, request_row=request_row, response_path=response_path):
-            skipped_existing_count += 1
-            continue
+    try:
+        for request_row in request_rows:
+            response_path = paths.responses_dir / f"{request_row['custom_id']}.json"
+            if _has_valid_async_annotation_response(config=config, request_row=request_row, response_path=response_path):
+                skipped_existing_count += 1
+                if progress_bar is not None:
+                    progress_bar.update(1)
+                continue
 
-        for attempt_number in range(1, config.async_retries.max_attempts + 1):
-            provider_response: dict[str, Any] | None = None
-            response_text = ""
-            try:
-                provider_response, response_text = _execute_async_request(
-                    config=config,
-                    request_payload=request_row["provider_request"],
-                )
-                _validate_async_response(
-                    config=config,
-                    request_row=request_row,
-                    response_path=response_path,
-                    response_text=response_text,
-                    provider_response=provider_response,
-                )
-                _write_json(
-                    response_path,
-                    {
-                        "config_path": str(config_path.resolve()) if config_path is not None else None,
-                        "name": config.name,
-                        "model_id": _model_id(config),
-                        "provider": config.model.provider,
-                        "model": config.model.name,
-                        "judge_id": _judge_id(config),
-                        "custom_id": request_row["custom_id"],
-                        "comment_id": request_row["comment_id"],
-                        "text": request_row["text"],
-                        "system_prompt": request_row["system_prompt"],
-                        "user_prompt": request_row["user_prompt"],
-                        "provider_request": request_row["provider_request"],
-                        "provider_response": provider_response,
-                        "response_text": response_text,
-                        "attempt_number": attempt_number,
-                        "completed_at": _utcnow(),
-                    },
-                )
-                break
-            except Exception as exc:  # noqa: BLE001
-                request_errors.append(
-                    _build_async_request_error_record(
+            for attempt_number in range(1, config.async_retries.max_attempts + 1):
+                provider_response: dict[str, Any] | None = None
+                response_text = ""
+                try:
+                    provider_response, response_text = _execute_async_request(
+                        config=config,
+                        request_payload=request_row["provider_request"],
+                    )
+                    _validate_async_response(
                         config=config,
                         request_row=request_row,
+                        response_path=response_path,
                         response_text=response_text,
                         provider_response=provider_response,
-                        exception=exc,
-                        attempt_number=attempt_number,
                     )
-                )
-                if attempt_number == config.async_retries.max_attempts:
+                    _write_json(
+                        response_path,
+                        {
+                            "config_path": str(config_path.resolve()) if config_path is not None else None,
+                            "name": config.name,
+                            "model_id": _model_id(config),
+                            "provider": config.model.provider,
+                            "model": config.model.name,
+                            "judge_id": _judge_id(config),
+                            "custom_id": request_row["custom_id"],
+                            "comment_id": request_row["comment_id"],
+                            "text": request_row["text"],
+                            "system_prompt": request_row["system_prompt"],
+                            "user_prompt": request_row["user_prompt"],
+                            "provider_request": request_row["provider_request"],
+                            "provider_response": provider_response,
+                            "response_text": response_text,
+                            "attempt_number": attempt_number,
+                            "completed_at": _utcnow(),
+                        },
+                    )
                     break
-                logger.info(
-                    "Retrying async request {} for {} after failed attempt {} / {}",
-                    request_row["custom_id"],
-                    _model_id(config),
-                    attempt_number,
-                    config.async_retries.max_attempts,
-                )
-                if config.async_retries.retry_delay_seconds > 0:
-                    time.sleep(config.async_retries.retry_delay_seconds)
+                except Exception as exc:  # noqa: BLE001
+                    request_errors.append(
+                        _build_async_request_error_record(
+                            config=config,
+                            request_row=request_row,
+                            response_text=response_text,
+                            provider_response=provider_response,
+                            exception=exc,
+                            attempt_number=attempt_number,
+                        )
+                    )
+                    if attempt_number == config.async_retries.max_attempts:
+                        break
+                    logger.info(
+                        "Retrying async request {} for {} after failed attempt {} / {}",
+                        request_row["custom_id"],
+                        _model_id(config),
+                        attempt_number,
+                        config.async_retries.max_attempts,
+                    )
+                    if config.async_retries.retry_delay_seconds > 0:
+                        time.sleep(config.async_retries.retry_delay_seconds)
+
+            if progress_bar is not None:
+                progress_bar.update(1)
+    finally:
+        if progress_bar is not None:
+            progress_bar.close()
 
     _write_jsonl(paths.request_errors_path, request_errors)
 

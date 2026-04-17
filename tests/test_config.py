@@ -166,7 +166,7 @@ def test_load_model_batch_configs_supports_checked_in_openrouter_smoke_config() 
     assert config.model.max_tokens == 512
     assert config.model.params == {"temperature": 0}
     assert config.prompt.system_prompt_path == (Path.cwd() / "prompts" / "mhs_survey_v1.txt").resolve()
-    assert config.limit == 1
+    assert config.limit == 10
     assert config.async_retries.max_attempts == 3
     assert config.async_retries.retry_delay_seconds == 0.0
     assert config.batches.run_dir == (

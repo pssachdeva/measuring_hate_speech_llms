@@ -426,6 +426,89 @@ batches:
     assert [output.model_id for output in outputs.outputs] == ["openai_one", "openai_two"]
 
 
+def test_launch_async_creates_one_progress_bar_per_model(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "multi.yaml"
+    config_path.write_text(
+        f"""
+name: async_multi
+subset: reference_set
+
+prompt:
+  system_prompt_path: {tmp_path / "system.txt"}
+
+models:
+  - id: openai_one
+    provider: openai
+    name: gpt-5.4
+    max_tokens: 128
+  - id: openai_two
+    provider: openai
+    name: gpt-5.4-mini
+    max_tokens: 128
+
+batches:
+  run_dir: {tmp_path / "runs"}
+  combined_output_path: {tmp_path / "data" / "combined.csv"}
+""".strip()
+    )
+    (tmp_path / "system.txt").write_text("Return JSON.")
+
+    monkeypatch.setattr(
+        async_jobs,
+        "_load_batch_comments",
+        lambda config: [
+            {"comment_id": 1, "text": "first"},
+            {"comment_id": 2, "text": "second"},
+        ],
+    )
+    monkeypatch.setattr(
+        async_jobs,
+        "_execute_async_request",
+        lambda config, request_payload: (
+            {"id": f"resp-{config.model.id}"},
+            '{"target_groups":["I"],"sentiment":"C","respect":"C","insult":"A","humiliate":"A",'
+            '"status":"C","dehumanize":"A","violence":"A","genocide":"A","attack_defend":"C","hate_speech":"B"}',
+        ),
+    )
+
+    progress_events: list[dict[str, object]] = []
+
+    class DummyTqdm:
+        def __init__(self, *, total, desc, unit, leave):
+            progress_events.append(
+                {
+                    "event": "create",
+                    "total": total,
+                    "desc": desc,
+                    "unit": unit,
+                    "leave": leave,
+                }
+            )
+            self.desc = desc
+
+        def update(self, count):
+            progress_events.append({"event": "update", "desc": self.desc, "count": count})
+
+        def close(self):
+            progress_events.append({"event": "close", "desc": self.desc})
+
+    monkeypatch.setattr(async_jobs, "tqdm", DummyTqdm)
+
+    outputs = async_jobs.launch_async(config_path=config_path)
+
+    assert outputs.all_complete is True
+    assert progress_events == [
+        {"event": "create", "total": 2, "desc": "openai_one", "unit": "req", "leave": True},
+        {"event": "update", "desc": "openai_one", "count": 1},
+        {"event": "update", "desc": "openai_one", "count": 1},
+        {"event": "close", "desc": "openai_one"},
+        {"event": "create", "total": 2, "desc": "openai_two", "unit": "req", "leave": True},
+        {"event": "update", "desc": "openai_two", "count": 1},
+        {"event": "update", "desc": "openai_two", "count": 1},
+        {"event": "close", "desc": "openai_two"},
+    ]
+
+
 def test_build_async_provider_request_uses_adaptive_thinking_for_claude_46(tmp_path: Path) -> None:
     config = make_config(tmp_path, provider="anthropic", model_name="claude-sonnet-4-6")
     config = ModelBatchConfig(

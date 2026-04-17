@@ -4,32 +4,28 @@ import sys
 
 from loguru import logger
 
+from mhs_llms.config import load_llm_facets_config
 from mhs_llms.facets import process_facets_run
-from mhs_llms.paths import REPO_ROOT
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Process FACETS score/output files into clean tables.")
     parser.add_argument(
-        "--facets-dir",
-        default=str(REPO_ROOT / "facets" / "human_baseline"),
-        help="Directory containing FACETS score files and the FACETS output report.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default=str(REPO_ROOT / "data" / "human_baseline" / "facets"),
-        help="Directory where processed FACETS CSV/JSON outputs should be written.",
+        "config",
+        help="Path to a FACETS YAML config. Reads and writes processed outputs in output.facets_run_dir.",
     )
     args = parser.parse_args()
 
     logger.remove()
     logger.add(sys.stderr, level="INFO")
 
+    config = load_llm_facets_config(Path(args.config))
+
     outputs = process_facets_run(
-        facets_dir=Path(args.facets_dir),
-        output_dir=Path(args.output_dir),
+        facets_dir=config.facets_run_dir,
+        output_dir=config.facets_run_dir,
     )
-    print(f"output_dir={outputs.output_dir}")
+    print(f"facets_dir={config.facets_run_dir}")
     print(f"combined_scores={outputs.combined_scores_path}")
     print(f"summary={outputs.summary_path}")
 
