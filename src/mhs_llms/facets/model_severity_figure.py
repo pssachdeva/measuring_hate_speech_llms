@@ -204,31 +204,32 @@ def plot_model_severity_figure(
     top_axis.set_xlim(plot_min - x_padding, plot_max + x_padding)
     direction_label_box = {
         "boxstyle": "round,pad=0.42,rounding_size=0.28",
-        "facecolor": "#FAF6F1",
-        "edgecolor": "#E7DCCF",
+        "facecolor": "#F4F4F4",
+        "edgecolor": "#D0D0D0",
         "linewidth": 0.8,
-        "alpha": 0.95,
+        "alpha": 0.72,
     }
-    bottom_axis.text(
-        plot_min - x_padding,
-        -0.10,
+    direction_label_inset = (plot_max - plot_min) * 0.09
+    top_axis.text(
+        plot_min - x_padding + direction_label_inset,
+        0.14,
         format_plot_text("More Likely to\nLabel as Hateful"),
-        transform=bottom_axis.get_xaxis_transform(),
+        transform=top_axis.get_xaxis_transform(),
         ha="center",
-        va="top",
+        va="bottom",
         fontsize=8,
-        clip_on=False,
+        color="#555555",
         bbox=direction_label_box,
     )
-    bottom_axis.text(
-        plot_max + x_padding,
-        -0.10,
+    top_axis.text(
+        plot_max + x_padding - direction_label_inset,
+        0.14,
         format_plot_text("Less Likely to\nLabel as Hateful"),
-        transform=bottom_axis.get_xaxis_transform(),
+        transform=top_axis.get_xaxis_transform(),
         ha="center",
-        va="top",
+        va="bottom",
         fontsize=8,
-        clip_on=False,
+        color="#555555",
         bbox=direction_label_box,
     )
 
