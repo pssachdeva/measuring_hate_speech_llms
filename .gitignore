@@ -12,3 +12,4 @@ batches/*
 data/*
 !data/.gitkeep
 facets/*
+configs/tests/*
