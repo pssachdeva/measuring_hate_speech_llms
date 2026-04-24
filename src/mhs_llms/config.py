@@ -29,6 +29,8 @@ class FacetsConfig:
     subset_detection: str = "No"
     delements: tuple[str, ...] = ("1N", "2N", "3N")
     csv: str = "Tab"
+    bias: Optional[str] = None
+    zscore: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +94,21 @@ class ModelBatchConfig:
 @dataclass(frozen=True)
 class LLMFacetsConfig:
     """Config for an LLM-only FACETS run anchored to the human baseline."""
+
+    annotation_paths: tuple[Path, ...]
+    comment_scores_path: Path
+    item_scores_path: Path
+    facets_run_dir: Path
+    facets_data_filename: str
+    facets_spec_filename: str
+    facets_score_filename: str
+    facets_output_filename: str
+    facets: FacetsConfig
+
+
+@dataclass(frozen=True)
+class SeverityDecompositionConfig:
+    """Config for a FACETS run estimating LLM judge-by-item interactions."""
 
     annotation_paths: tuple[Path, ...]
     comment_scores_path: Path
@@ -207,6 +224,26 @@ def _parse_batch_storage_config(batch_data: dict[str, Any], run_dir: Path | None
     )
 
 
+def _parse_facets_config(
+    facets_data: dict[str, Any],
+    default_model: str = "?, ?, #, R",
+) -> FacetsConfig:
+    """Parse common FACETS control settings from config data."""
+
+    return FacetsConfig(
+        title=facets_data["title"],
+        model=facets_data.get("model", default_model),
+        noncenter=int(facets_data.get("noncenter", 1)),
+        positive=int(facets_data.get("positive", 1)),
+        arrange=str(facets_data.get("arrange", "N")),
+        subset_detection=_normalize_yes_no(facets_data.get("subset_detection"), "No"),
+        delements=tuple(facets_data.get("delements", ["1N", "2N", "3N"])),
+        csv=str(facets_data.get("csv", "Tab")),
+        bias=str(facets_data["bias"]) if facets_data.get("bias") is not None else None,
+        zscore=str(facets_data["zscore"]) if facets_data.get("zscore") is not None else None,
+    )
+
+
 def _build_model_batch_config(
     *,
     name: str,
@@ -260,16 +297,7 @@ def load_human_baseline_config(config_path: Path) -> HumanBaselineConfig:
         facets_score_filename=data["output"]["facets_score_filename"],
         facets_output_filename=data["output"]["facets_output_filename"],
     )
-    facets = FacetsConfig(
-        title=data["facets"]["title"],
-        model=data["facets"].get("model", "?, ?, #, R"),
-        noncenter=int(data["facets"].get("noncenter", 1)),
-        positive=int(data["facets"].get("positive", 1)),
-        arrange=str(data["facets"].get("arrange", "N")),
-        subset_detection=_normalize_yes_no(data["facets"].get("subset_detection"), "No"),
-        delements=tuple(data["facets"].get("delements", ["1N", "2N", "3N"])),
-        csv=str(data["facets"].get("csv", "Tab")),
-    )
+    facets = _parse_facets_config(data["facets"])
     return HumanBaselineConfig(
         output=output,
         facets=facets,
@@ -347,16 +375,7 @@ def load_llm_facets_config(config_path: Path) -> LLMFacetsConfig:
     config_path = config_path.resolve()
     data = yaml.safe_load(config_path.read_text())
 
-    facets = FacetsConfig(
-        title=data["facets"]["title"],
-        model=data["facets"].get("model", "?, ?, #, R"),
-        noncenter=int(data["facets"].get("noncenter", 1)),
-        positive=int(data["facets"].get("positive", 1)),
-        arrange=str(data["facets"].get("arrange", "N")),
-        subset_detection=_normalize_yes_no(data["facets"].get("subset_detection"), "No"),
-        delements=tuple(data["facets"].get("delements", ["1N", "2N", "3N"])),
-        csv=str(data["facets"].get("csv", "Tab")),
-    )
+    facets = _parse_facets_config(data["facets"])
 
     annotation_values = data["annotations"].get("paths")
     if annotation_values is None:
@@ -372,4 +391,34 @@ def load_llm_facets_config(config_path: Path) -> LLMFacetsConfig:
         facets_score_filename=str(data["output"].get("facets_score_filename", "llm_facets_scores.txt")),
         facets_output_filename=str(data["output"].get("facets_output_filename", "llm_facets_output.txt")),
         facets=facets,
+    )
+
+
+def load_severity_decomposition_config(config_path: Path) -> SeverityDecompositionConfig:
+    """Load config for the LLM item-dependent severity FACETS prep run."""
+
+    config_path = config_path.resolve()
+    data = yaml.safe_load(config_path.read_text())
+    annotation_values = data["annotations"].get("paths")
+    if annotation_values is None:
+        annotation_values = [data["annotations"]["path"]]
+
+    return SeverityDecompositionConfig(
+        annotation_paths=tuple(_resolve_path(path_value) for path_value in annotation_values),
+        comment_scores_path=_resolve_path(data["anchors"]["comment_scores_path"]),
+        item_scores_path=_resolve_path(data["anchors"]["item_scores_path"]),
+        facets_run_dir=_resolve_path(data["output"]["facets_run_dir"]),
+        facets_data_filename=str(
+            data["output"].get("facets_data_filename", "severity_decomposition_data.tsv")
+        ),
+        facets_spec_filename=str(
+            data["output"].get("facets_spec_filename", "severity_decomposition_spec.txt")
+        ),
+        facets_score_filename=str(
+            data["output"].get("facets_score_filename", "severity_decomposition_scores.txt")
+        ),
+        facets_output_filename=str(
+            data["output"].get("facets_output_filename", "severity_decomposition_output.txt")
+        ),
+        facets=_parse_facets_config(data["facets"], default_model="?, ?B, #B, R"),
     )

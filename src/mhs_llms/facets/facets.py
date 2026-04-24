@@ -75,6 +75,15 @@ def build_facets_spec(
         anchor_header=True,
     )
 
+    optional_lines = []
+    if facets_config.bias is not None:
+        optional_lines.append(f"Bias = {facets_config.bias}")
+    if facets_config.zscore is not None:
+        optional_lines.append(f"Zscore = {facets_config.zscore}")
+    optional_text = "\n".join(optional_lines)
+    if optional_text:
+        optional_text = f"{optional_text}\n"
+
     return (
         f"Title = {facets_config.title}\n"
         "Facets = 3\n"
@@ -84,6 +93,7 @@ def build_facets_spec(
         f"Arrange = {facets_config.arrange}\n"
         f"Subset detection = {facets_config.subset_detection}\n"
         f"Delements = {delements}\n"
+        f"{optional_text}"
         f"Scorefile = {score_filename}\n"
         f"Output file = {output_filename}\n"
         f"CSV = {facets_config.csv}\n\n"

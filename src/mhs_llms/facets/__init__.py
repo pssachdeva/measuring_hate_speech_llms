@@ -15,18 +15,30 @@ from mhs_llms.facets.postprocess import (
     parse_facets_score_file,
     process_facets_run,
 )
+from mhs_llms.facets.severity_decomposition import (
+    SeverityDecompositionOutputs,
+    SeverityDecompositionPostprocessOutputs,
+    parse_bias_interaction_report,
+    process_severity_decomposition_run,
+    run_severity_decomposition_facets,
+)
 
 __all__ = [
     "AnchoredLLMFacetsOutputs",
     "FacetsPostprocessOutputs",
+    "SeverityDecompositionOutputs",
+    "SeverityDecompositionPostprocessOutputs",
     "build_facets_frame",
     "build_facets_spec",
     "build_human_facets_frame",
     "extract_facets_run_summary",
     "load_measure_anchors",
+    "parse_bias_interaction_report",
     "parse_facets_score_file",
     "process_facets_run",
+    "process_severity_decomposition_run",
     "run_anchored_llm_facets",
+    "run_severity_decomposition_facets",
     "write_facets_data",
     "write_facets_spec",
 ]

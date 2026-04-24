@@ -2,7 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from mhs_llms.config import load_model_batch_config, load_model_batch_configs
+from mhs_llms.config import (
+    load_model_batch_config,
+    load_model_batch_configs,
+    load_severity_decomposition_config,
+)
 
 
 def test_load_model_batch_config_resolves_paths_and_params(tmp_path: Path) -> None:
@@ -207,3 +211,22 @@ batches:
     assert len(configs) == 2
     assert all(config.async_retries.max_attempts == 5 for config in configs)
     assert all(config.async_retries.retry_delay_seconds == 2.5 for config in configs)
+
+
+def test_load_severity_decomposition_config_resolves_paths() -> None:
+    config = load_severity_decomposition_config(
+        Path("configs/reference_set_all/facets_severity_decomposition.yaml")
+    )
+
+    assert config.annotation_paths[0] == (
+        Path.cwd() / "data" / "reference_set_openai_processed.csv"
+    ).resolve()
+    assert config.comment_scores_path == (
+        Path.cwd() / "facets" / "human_baseline" / "human_facets_scores.1.txt"
+    ).resolve()
+    assert config.item_scores_path == (
+        Path.cwd() / "facets" / "human_baseline" / "human_facets_scores.3.txt"
+    ).resolve()
+    assert config.facets.model == "?, ?B, #B, R"
+    assert config.facets.bias == "Difficulty"
+    assert config.facets.zscore == "0, 0"
