@@ -87,6 +87,41 @@ batches:
     ).resolve()
 
 
+def test_load_model_batch_config_preserves_structured_subset(tmp_path: Path) -> None:
+    config_path = tmp_path / "threshold_subset.yaml"
+    config_path.write_text(
+        """
+name: openai_gpt-5.4_annotators4to7
+subset:
+  type: annotator_count_threshold
+  min: 4
+  max: 7
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+model:
+  id: openai_gpt-5.4_annotators4to7
+  provider: openai
+  name: gpt-5.4
+  max_tokens: 2000
+  reasoning:
+    effort: low
+
+batches:
+  run_dir: batches/openai_gpt-5.4_annotators4to7
+""".strip()
+    )
+
+    config = load_model_batch_config(config_path)
+
+    assert config.subset == {
+        "type": "annotator_count_threshold",
+        "min": 4,
+        "max": 7,
+    }
+
+
 def test_load_model_batch_configs_resolves_model_list_into_per_model_run_dirs(tmp_path: Path) -> None:
     config_path = tmp_path / "multi_model.yaml"
     config_path.write_text(

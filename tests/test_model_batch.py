@@ -839,6 +839,34 @@ def test_select_comment_ids_all_comments_ignores_platform_filter() -> None:
     assert comment_ids == [10, 20]
 
 
+def test_select_comment_ids_uses_annotator_count_threshold() -> None:
+    dataframe = pd.DataFrame(
+        [
+            {"comment_id": 10, "platform": 0, "text": "ten"},
+            {"comment_id": 10, "platform": 0, "text": "ten"},
+            {"comment_id": 20, "platform": 0, "text": "twenty"},
+            {"comment_id": 20, "platform": 0, "text": "twenty"},
+            {"comment_id": 20, "platform": 0, "text": "twenty"},
+            {"comment_id": 20, "platform": 0, "text": "twenty"},
+            {"comment_id": 30, "platform": 0, "text": "thirty"},
+            {"comment_id": 30, "platform": 0, "text": "thirty"},
+            {"comment_id": 30, "platform": 0, "text": "thirty"},
+            {"comment_id": 30, "platform": 0, "text": "thirty"},
+            {"comment_id": 30, "platform": 0, "text": "thirty"},
+            {"comment_id": 30, "platform": 0, "text": "thirty"},
+            {"comment_id": 30, "platform": 0, "text": "thirty"},
+            {"comment_id": 30, "platform": 0, "text": "thirty"},
+        ]
+    )
+
+    comment_ids = _select_comment_ids(
+        dataframe,
+        {"type": "annotator_count_threshold", "min": 4, "max": 7},
+    )
+
+    assert comment_ids == [20]
+
+
 def test_write_processed_annotations_rewrites_csv_without_duplicates(tmp_path: Path) -> None:
     processed_csv = tmp_path / "processed.csv"
     processed_jsonl = tmp_path / "processed.jsonl"

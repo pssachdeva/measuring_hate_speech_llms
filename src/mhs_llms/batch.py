@@ -443,7 +443,7 @@ def _load_batch_comments(config: ModelBatchConfig) -> list[dict[str, Any]]:
     return comments.to_dict(orient="records")
 
 
-def _select_comment_ids(dataframe: pd.DataFrame, subset: str) -> list[int] | None:
+def _select_comment_ids(dataframe: pd.DataFrame, subset: str | dict[str, Any]) -> list[int] | None:
     """Return the in-code comment selection for a named batch subset."""
 
     if subset == "reference_set":
@@ -462,7 +462,32 @@ def _select_comment_ids(dataframe: pd.DataFrame, subset: str) -> list[int] | Non
             .sort_values(kind="stable")
             .tolist()
         )
+    if isinstance(subset, dict):
+        subset_type = str(subset.get("type", ""))
+        if subset_type == "annotator_count_threshold":
+            return _select_annotator_count_threshold_comment_ids(dataframe=dataframe, subset=subset)
+        raise ValueError(f"Unsupported subset type: {subset_type}")
     raise ValueError(f"Unsupported subset: {subset}")
+
+
+def _select_annotator_count_threshold_comment_ids(
+    dataframe: pd.DataFrame,
+    subset: dict[str, Any],
+) -> list[int]:
+    """Return comment ids whose annotation count falls within configured bounds."""
+
+    min_count = subset.get("min")
+    max_count = subset.get("max")
+    if min_count is None and max_count is None:
+        raise ValueError("annotator_count_threshold subset requires 'min' or 'max'")
+
+    counts = dataframe.groupby("comment_id").size()
+    selected = counts
+    if min_count is not None:
+        selected = selected[selected >= int(min_count)]
+    if max_count is not None:
+        selected = selected[selected <= int(max_count)]
+    return selected.index.astype(int).sort_values().tolist()
 
 
 def _build_requests(

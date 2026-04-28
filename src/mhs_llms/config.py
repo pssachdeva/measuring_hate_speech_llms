@@ -86,7 +86,7 @@ class ModelBatchConfig:
     prompt: BatchPromptConfig
     model: BatchModelConfig
     batches: BatchStorageConfig
-    subset: str = "reference_set"
+    subset: str | dict[str, Any] = "reference_set"
     limit: Optional[int] = None
     async_retries: AsyncRetryConfig = field(default_factory=AsyncRetryConfig)
 
@@ -250,7 +250,7 @@ def _build_model_batch_config(
     prompt: BatchPromptConfig,
     model: BatchModelConfig,
     batches: BatchStorageConfig,
-    subset: str,
+    subset: str | dict[str, Any],
     limit: Optional[int],
     async_retries: AsyncRetryConfig,
 ) -> ModelBatchConfig:
@@ -321,7 +321,7 @@ def load_model_batch_configs(config_path: Path) -> tuple[ModelBatchConfig, ...]:
     config_path = config_path.resolve()
     data = _load_yaml_config(config_path)
     prompt = _parse_batch_prompt_config(data["prompt"])
-    subset = str(data.get("subset", "reference_set"))
+    subset = data.get("subset", "reference_set")
     limit = int(data["limit"]) if data.get("limit") is not None else None
     async_retries = _parse_async_retry_config(data.get("async"))
 

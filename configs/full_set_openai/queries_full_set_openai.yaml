@@ -1,0 +1,24 @@
+name: full_set_openai_1
+description: |
+  GPT-5.4 annotation run for MHS comments with 4 to 7 human annotators.
+  This excludes the high-annotation reference-set comments by count threshold.
+
+subset:
+  type: annotator_count_threshold
+  min: 5
+  max: 7
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+model:
+  id: openai_gpt-5.4_medium
+  provider: openai
+  name: gpt-5.4
+  max_tokens: 4000
+  reasoning:
+    effort: medium
+
+batches:
+  run_dir: batches/full_set_openai_1
+  combined_output_path: data/full_set_openai_processed_1.csv
