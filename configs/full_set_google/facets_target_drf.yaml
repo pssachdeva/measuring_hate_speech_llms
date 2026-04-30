@@ -1,0 +1,54 @@
+annotations:
+  paths:
+    - data/full_set_google_gemini-3.1-pro-preview-medium.csv
+
+targets:
+  dataset_name: ucberkeley-dlab/measuring-hate-speech
+  split: train
+  min_annotators: 4
+  agreement_threshold: 0.75
+  min_comments_per_target: 50
+  collapse:
+    target_origin_specific_country: target_origin
+    target_origin_immigrant: target_origin
+    target_origin_migrant_worker: target_origin
+    target_origin_undocumented: target_origin
+    target_origin_other: target_origin
+    target_gender_transgender_women: target_gender_transgender
+    target_gender_transgender_men: target_gender_transgender
+    target_gender_transgender_unspecified: target_gender_transgender
+  exclude:
+    - target_religion_other
+    - target_race_other
+    - target_sexuality_other
+    - target_race_native_american
+    - target_religion_mormon
+
+anchors:
+  comment_scores_path: facets/human_baseline/human_facets_scores.1.txt
+  item_scores_path: facets/human_baseline/human_facets_scores.3.txt
+  judge_scores_path: facets/reference_set_google/reference_set_google_scores.2.txt
+
+output:
+  facets_run_dir: facets/full_set_google_target_drf
+  target_labels_path: data/full_set_google_target_drf_labels.csv
+  facets_data_filename: full_set_google_target_drf_data.tsv
+  facets_spec_filename: full_set_google_target_drf_spec.txt
+  facets_score_filename: full_set_google_target_drf_scores.txt
+  facets_output_filename: full_set_google_target_drf_output.txt
+
+facets:
+  title: MHS Full Set Google Gemini Target-Identity DRF
+  model: "?, ?B, #, ?B, R"
+  noncenter: 2
+  positive: 1
+  arrange: N
+  subset_detection: No
+  delements:
+    - 1N
+    - 2N
+    - 3N
+    - 4N
+  bias: Difficulty
+  zscore: "0, 0"
+  csv: Tab

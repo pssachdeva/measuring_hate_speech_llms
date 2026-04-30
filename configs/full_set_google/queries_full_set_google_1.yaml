@@ -1,0 +1,25 @@
+name: full_set_google_1
+description: |
+  Gemini 3.1 Pro preview medium annotation run for MHS comments with 5 to 7
+  human annotators. In the current MHS train split this covers the 5- and
+  6-annotator comments.
+
+subset:
+  type: annotator_count_threshold
+  min: 5
+  max: 7
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+model:
+  id: google_gemini-3.1-pro-preview_medium
+  provider: google
+  name: gemini-3.1-pro-preview
+  max_tokens: 2048
+  reasoning:
+    effort: medium
+
+batches:
+  run_dir: batches/full_set_google_1
+  combined_output_path: data/full_set_google_processed_1.csv

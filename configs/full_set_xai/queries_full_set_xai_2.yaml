@@ -1,0 +1,22 @@
+name: full_set_xai_2
+description: |
+  Grok 4.1 Fast Reasoning annotation run for MHS comments with exactly 4 human
+  annotators.
+
+subset:
+  type: annotator_count_threshold
+  min: 4
+  max: 4
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+model:
+  id: xai_grok-4-1-fast-reasoning
+  provider: xai
+  name: grok-4-1-fast-reasoning
+  max_tokens: 2048
+
+batches:
+  run_dir: batches/full_set_xai_2
+  combined_output_path: data/full_set_xai_processed_2.csv
