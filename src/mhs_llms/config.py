@@ -121,6 +121,30 @@ class SeverityDecompositionConfig:
     facets: FacetsConfig
 
 
+@dataclass(frozen=True)
+class TargetDRFConfig:
+    """Config for a FACETS run estimating LLM judge-by-target interactions."""
+
+    annotation_paths: tuple[Path, ...]
+    dataset_name: str
+    split: str
+    min_annotators: int
+    agreement_threshold: float
+    min_comments_per_target: int
+    collapse_targets: dict[str, str]
+    exclude_targets: tuple[str, ...]
+    comment_scores_path: Path
+    item_scores_path: Path
+    judge_scores_path: Path
+    facets_run_dir: Path
+    target_labels_path: Path
+    facets_data_filename: str
+    facets_spec_filename: str
+    facets_score_filename: str
+    facets_output_filename: str
+    facets: FacetsConfig
+
+
 def _resolve_path(path_value: Union[str, Path]) -> Path:
     """Resolve config paths from the current working directory."""
 
@@ -421,4 +445,36 @@ def load_severity_decomposition_config(config_path: Path) -> SeverityDecompositi
             data["output"].get("facets_output_filename", "severity_decomposition_output.txt")
         ),
         facets=_parse_facets_config(data["facets"], default_model="?, ?B, #B, R"),
+    )
+
+
+def load_target_drf_config(config_path: Path) -> TargetDRFConfig:
+    """Load config for the LLM target-identity DRF FACETS prep run."""
+
+    config_path = config_path.resolve()
+    data = yaml.safe_load(config_path.read_text())
+    annotation_values = data["annotations"].get("paths")
+    if annotation_values is None:
+        annotation_values = [data["annotations"]["path"]]
+
+    targets = data["targets"]
+    return TargetDRFConfig(
+        annotation_paths=tuple(_resolve_path(path_value) for path_value in annotation_values),
+        dataset_name=str(targets.get("dataset_name", "ucberkeley-dlab/measuring-hate-speech")),
+        split=str(targets.get("split", "train")),
+        min_annotators=int(targets.get("min_annotators", 4)),
+        agreement_threshold=float(targets.get("agreement_threshold", 0.75)),
+        min_comments_per_target=int(targets.get("min_comments_per_target", 1)),
+        collapse_targets=dict(targets.get("collapse", {})),
+        exclude_targets=tuple(str(value) for value in targets.get("exclude", [])),
+        comment_scores_path=_resolve_path(data["anchors"]["comment_scores_path"]),
+        item_scores_path=_resolve_path(data["anchors"]["item_scores_path"]),
+        judge_scores_path=_resolve_path(data["anchors"]["judge_scores_path"]),
+        facets_run_dir=_resolve_path(data["output"]["facets_run_dir"]),
+        target_labels_path=_resolve_path(data["output"]["target_labels_path"]),
+        facets_data_filename=str(data["output"].get("facets_data_filename", "target_drf_data.tsv")),
+        facets_spec_filename=str(data["output"].get("facets_spec_filename", "target_drf_spec.txt")),
+        facets_score_filename=str(data["output"].get("facets_score_filename", "target_drf_scores.txt")),
+        facets_output_filename=str(data["output"].get("facets_output_filename", "target_drf_output.txt")),
+        facets=_parse_facets_config(data["facets"], default_model="?, ?B, #, ?B, R"),
     )
