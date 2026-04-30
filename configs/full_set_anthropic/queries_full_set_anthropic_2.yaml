@@ -1,0 +1,24 @@
+name: full_set_anthropic_2
+description: |
+  Claude Opus 4.6 medium annotation run for MHS comments with exactly 4 human
+  annotators.
+
+subset:
+  type: annotator_count_threshold
+  min: 4
+  max: 4
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+model:
+  id: anthropic_claude-opus-4-6_medium
+  provider: anthropic
+  name: claude-opus-4-6
+  max_tokens: 4096
+  reasoning:
+    effort: medium
+
+batches:
+  run_dir: batches/full_set_anthropic_2
+  combined_output_path: data/full_set_anthropic_processed_2.csv

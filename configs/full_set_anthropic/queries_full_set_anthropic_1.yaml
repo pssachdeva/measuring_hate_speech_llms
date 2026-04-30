@@ -1,0 +1,25 @@
+name: full_set_anthropic_1
+description: |
+  Claude Opus 4.6 medium annotation run for MHS comments with 5 to 7 human
+  annotators. In the current MHS train split this covers the 5- and
+  6-annotator comments.
+
+subset:
+  type: annotator_count_threshold
+  min: 5
+  max: 7
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+model:
+  id: anthropic_claude-opus-4-6_medium
+  provider: anthropic
+  name: claude-opus-4-6
+  max_tokens: 4096
+  reasoning:
+    effort: medium
+
+batches:
+  run_dir: batches/full_set_anthropic_1
+  combined_output_path: data/full_set_anthropic_processed_1.csv
