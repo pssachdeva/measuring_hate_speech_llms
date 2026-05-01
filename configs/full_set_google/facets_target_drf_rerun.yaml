@@ -1,6 +1,6 @@
 annotations:
   paths:
-    - data/full_set_anthropic_claude-opus-4-6-medium.csv
+    - data/target_drf_google_processed.csv
 
 targets:
   dataset_name: ucberkeley-dlab/measuring-hate-speech
@@ -28,18 +28,18 @@ targets:
 anchors:
   comment_scores_path: facets/human_baseline/human_facets_scores.1.txt
   item_scores_path: facets/human_baseline/human_facets_scores.3.txt
-  judge_scores_path: facets/reference_set_anthropic/reference_set_anthropic_scores.2.txt
+  judge_scores_path: facets/reference_set_google/reference_set_google_scores.2.txt
 
 output:
-  facets_run_dir: facets/full_set_anthropic_target_drf
-  target_labels_path: data/full_set_anthropic_target_drf_labels.csv
-  facets_data_filename: full_set_anthropic_target_drf_data.tsv
-  facets_spec_filename: full_set_anthropic_target_drf_spec.txt
-  facets_score_filename: full_set_anthropic_target_drf_scores.txt
-  facets_output_filename: full_set_anthropic_target_drf_output.txt
+  facets_run_dir: facets/target_drf_google
+  target_labels_path: data/target_drf_google_labels.csv
+  facets_data_filename: target_drf_google_data.tsv
+  facets_spec_filename: target_drf_google_spec.txt
+  facets_score_filename: target_drf_google_scores.txt
+  facets_output_filename: target_drf_google_output.txt
 
 facets:
-  title: MHS Full Set Anthropic Opus 4.6 Target-Identity DRF
+  title: MHS Target DRF Google Gemini Metadata Rerun
   model: "?, ?B, #, ?B, R"
   noncenter: 2
   positive: 1
