@@ -1,0 +1,22 @@
+name: reference_set_google_medium_rerun
+description: |
+  Gemini 3.1 Pro preview medium reference-set rerun after preserving Google
+  inline batch metadata. This intentionally rewrites the canonical Google
+  reference processed output for the DRF anchor workflow.
+
+subset: reference_set
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+model:
+  id: google_gemini-3.1-pro-preview_medium
+  provider: google
+  name: gemini-3.1-pro-preview
+  max_tokens: 2048
+  reasoning:
+    effort: medium
+
+batches:
+  run_dir: batches/reference_set_google/google_gemini-3.1-pro-preview_medium
+  combined_output_path: data/reference_set_google_processed.csv

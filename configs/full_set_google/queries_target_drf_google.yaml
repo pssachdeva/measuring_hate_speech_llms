@@ -1,0 +1,24 @@
+name: target_drf_google
+description: |
+  Gemini 3.1 Pro preview medium one-shot annotation run for all target-labeled
+  comments used in the target-identity DRF analysis.
+
+subset:
+  type: comment_ids_file
+  path: data/full_set_google_target_drf_labels.csv
+  column: comment_id
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+model:
+  id: google_gemini-3.1-pro-preview_medium
+  provider: google
+  name: gemini-3.1-pro-preview
+  max_tokens: 2048
+  reasoning:
+    effort: medium
+
+batches:
+  run_dir: batches/target_drf_google
+  combined_output_path: data/target_drf_google_processed.csv
