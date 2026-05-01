@@ -131,6 +131,7 @@ class TargetDRFConfig:
     min_annotators: int
     agreement_threshold: float
     min_comments_per_target: int
+    anchor_targets: bool
     collapse_targets: dict[str, str]
     exclude_targets: tuple[str, ...]
     comment_scores_path: Path
@@ -222,7 +223,9 @@ def _parse_async_retry_config(async_data: dict[str, Any] | None) -> AsyncRetryCo
     )
 
 
-def _parse_batch_storage_config(batch_data: dict[str, Any], run_dir: Path | None = None) -> BatchStorageConfig:
+def _parse_batch_storage_config(
+    batch_data: dict[str, Any], run_dir: Path | None = None
+) -> BatchStorageConfig:
     """Parse batch storage paths and filenames from the config file."""
 
     resolved_run_dir = run_dir if run_dir is not None else _resolve_path(batch_data["run_dir"])
@@ -240,7 +243,9 @@ def _parse_batch_storage_config(batch_data: dict[str, Any], run_dir: Path | None
         processed_records_filename=str(
             batch_data.get("processed_records_filename", "processed_records.jsonl")
         ),
-        processed_csv_filename=str(batch_data.get("processed_csv_filename", "processed_records.csv")),
+        processed_csv_filename=str(
+            batch_data.get("processed_csv_filename", "processed_records.csv")
+        ),
         errors_filename=str(batch_data.get("errors_filename", "processing_errors.jsonl")),
         combined_output_path=(
             _resolve_path(combined_output_path) if combined_output_path is not None else None
@@ -291,7 +296,9 @@ def _build_model_batch_config(
     )
 
 
-def _clone_batch_storage_config(batch_config: BatchStorageConfig, run_dir: Path) -> BatchStorageConfig:
+def _clone_batch_storage_config(
+    batch_config: BatchStorageConfig, run_dir: Path
+) -> BatchStorageConfig:
     """Copy the shared storage settings while swapping in a model-specific run dir."""
 
     return BatchStorageConfig(
@@ -412,8 +419,12 @@ def load_llm_facets_config(config_path: Path) -> LLMFacetsConfig:
         facets_run_dir=_resolve_path(data["output"]["facets_run_dir"]),
         facets_data_filename=str(data["output"].get("facets_data_filename", "llm_facets_data.tsv")),
         facets_spec_filename=str(data["output"].get("facets_spec_filename", "llm_facets_spec.txt")),
-        facets_score_filename=str(data["output"].get("facets_score_filename", "llm_facets_scores.txt")),
-        facets_output_filename=str(data["output"].get("facets_output_filename", "llm_facets_output.txt")),
+        facets_score_filename=str(
+            data["output"].get("facets_score_filename", "llm_facets_scores.txt")
+        ),
+        facets_output_filename=str(
+            data["output"].get("facets_output_filename", "llm_facets_output.txt")
+        ),
         facets=facets,
     )
 
@@ -465,6 +476,7 @@ def load_target_drf_config(config_path: Path) -> TargetDRFConfig:
         min_annotators=int(targets.get("min_annotators", 4)),
         agreement_threshold=float(targets.get("agreement_threshold", 0.75)),
         min_comments_per_target=int(targets.get("min_comments_per_target", 1)),
+        anchor_targets=bool(targets.get("anchor_targets", False)),
         collapse_targets=dict(targets.get("collapse", {})),
         exclude_targets=tuple(str(value) for value in targets.get("exclude", [])),
         comment_scores_path=_resolve_path(data["anchors"]["comment_scores_path"]),
@@ -474,7 +486,11 @@ def load_target_drf_config(config_path: Path) -> TargetDRFConfig:
         target_labels_path=_resolve_path(data["output"]["target_labels_path"]),
         facets_data_filename=str(data["output"].get("facets_data_filename", "target_drf_data.tsv")),
         facets_spec_filename=str(data["output"].get("facets_spec_filename", "target_drf_spec.txt")),
-        facets_score_filename=str(data["output"].get("facets_score_filename", "target_drf_scores.txt")),
-        facets_output_filename=str(data["output"].get("facets_output_filename", "target_drf_output.txt")),
+        facets_score_filename=str(
+            data["output"].get("facets_score_filename", "target_drf_scores.txt")
+        ),
+        facets_output_filename=str(
+            data["output"].get("facets_output_filename", "target_drf_output.txt")
+        ),
         facets=_parse_facets_config(data["facets"], default_model="?, ?B, #, ?B, R"),
     )

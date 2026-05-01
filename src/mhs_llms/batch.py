@@ -466,8 +466,26 @@ def _select_comment_ids(dataframe: pd.DataFrame, subset: str | dict[str, Any]) -
         subset_type = str(subset.get("type", ""))
         if subset_type == "annotator_count_threshold":
             return _select_annotator_count_threshold_comment_ids(dataframe=dataframe, subset=subset)
+        if subset_type == "comment_ids_file":
+            return _select_comment_ids_from_file(subset=subset)
         raise ValueError(f"Unsupported subset type: {subset_type}")
     raise ValueError(f"Unsupported subset: {subset}")
+
+
+def _select_comment_ids_from_file(subset: dict[str, Any]) -> list[int]:
+    """Return comment ids from a CSV file column configured by a structured subset."""
+
+    path_value = subset.get("path")
+    if path_value is None:
+        raise ValueError("comment_ids_file subset requires 'path'")
+    column = str(subset.get("column", "comment_id"))
+    path = Path(path_value)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    frame = pd.read_csv(path)
+    if column not in frame.columns:
+        raise ValueError(f"comment_ids_file column '{column}' not found in {path}")
+    return frame[column].drop_duplicates().astype(int).tolist()
 
 
 def _select_annotator_count_threshold_comment_ids(
@@ -675,18 +693,25 @@ def _create_provider_batch(
             path="/v1/batches",
             payload={"name": config.name},
         )
-        _xai_api_request(
-            config=config,
-            method="POST",
-            path=f"/v1/batches/{batch['batch_id']}/requests",
-            payload={"batch_requests": provider_requests},
-        )
+        for request_chunk in _chunks(provider_requests, size=1000):
+            _xai_api_request(
+                config=config,
+                method="POST",
+                path=f"/v1/batches/{batch['batch_id']}/requests",
+                payload={"batch_requests": request_chunk},
+            )
         return _xai_api_request(
             config=config,
             method="GET",
             path=f"/v1/batches/{batch['batch_id']}",
         )
     raise ValueError(f"Unsupported provider: {config.model.provider}")
+
+
+def _chunks(items: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
+    """Split provider request payloads into fixed-size chunks."""
+
+    return [items[index : index + size] for index in range(0, len(items), size)]
 
 
 def _retrieve_provider_batch(config: ModelBatchConfig, batch_id: str) -> Any:
@@ -745,7 +770,15 @@ def _download_provider_results(config: ModelBatchConfig, batch_object: Any) -> l
             results: list[dict[str, Any]] = []
             for manifest_entry, response_row in zip(request_manifest, response_rows, strict=True):
                 entry = dict(response_row)
-                entry.setdefault("custom_id", str(manifest_entry["custom_id"]))
+                metadata = entry.get("metadata")
+                metadata_key = metadata.get("key") if isinstance(metadata, dict) else None
+                if metadata_key is not None:
+                    entry.setdefault("custom_id", str(metadata_key))
+                else:
+                    # Older Google inline runs did not preserve metadata. Keep
+                    # the positional fallback for compatibility, but new runs
+                    # should carry metadata so out-of-order responses are safe.
+                    entry.setdefault("custom_id", str(manifest_entry["custom_id"]))
                 results.append(entry)
             return results
 
@@ -974,6 +1007,9 @@ def _google_inline_request_from_batch_entry(entry: dict[str, Any]) -> dict[str, 
     inline_request = {
         "contents": request_payload["contents"],
     }
+    metadata = entry.get("metadata")
+    if isinstance(metadata, dict):
+        inline_request["metadata"] = {str(key): str(value) for key, value in metadata.items()}
 
     config: dict[str, Any] = {}
     generation_config = request_payload.get("generationConfig") or request_payload.get("generation_config")

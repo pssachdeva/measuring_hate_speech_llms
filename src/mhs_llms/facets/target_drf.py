@@ -37,7 +37,9 @@ def run_target_drf_facets(config_path: Path) -> TargetDRFOutputs:
 
     config = load_target_drf_config(config_path)
     target_labels = build_target_identity_labels(config)
-    annotation_frames = [pd.read_csv(annotation_path) for annotation_path in config.annotation_paths]
+    annotation_frames = [
+        pd.read_csv(annotation_path) for annotation_path in config.annotation_paths
+    ]
     annotations = pd.concat(annotation_frames, ignore_index=True)
     target_labels = filter_target_labels_to_annotations(
         target_labels=target_labels,
@@ -139,6 +141,9 @@ def process_target_drf_run(
 def parse_target_term_scores(config: TargetDRFConfig) -> pd.DataFrame:
     """Read the FACETS target score file and attach target label counts."""
 
+    if config.anchor_targets:
+        return parse_target_bias_terms(config)
+
     target_score_path = config.facets_run_dir / config.facets_score_filename.replace(
         ".txt", ".4.txt"
     )
@@ -166,18 +171,36 @@ def parse_target_term_scores(config: TargetDRFConfig) -> pd.DataFrame:
     ]
     target_terms = target_terms[columns].copy()
 
-    if config.target_labels_path.exists():
-        labels = pd.read_csv(config.target_labels_path)
-        counts = (
-            labels.groupby("target_identity")
-            .agg(
-                comment_count=("comment_id", "nunique"),
-                mean_target_share=("target_share", "mean"),
-            )
-            .reset_index()
-        )
+    counts = _load_target_label_counts(config)
+    if counts is not None:
         target_terms = target_terms.merge(counts, on="target_identity", how="left")
     return target_terms.sort_values("target_measure", kind="stable").reset_index(drop=True)
+
+
+def parse_target_bias_terms(config: TargetDRFConfig) -> pd.DataFrame:
+    """Parse judge-by-target beta terms from FACETS Table 13."""
+
+    report_path = config.facets_run_dir / config.facets_output_filename
+    rows = []
+    in_table = False
+    for line in report_path.read_text(errors="replace").splitlines():
+        if line.startswith("Table 13.") and "Bias/Interaction Report" in line:
+            in_table = True
+            continue
+        if in_table and line.startswith("Table 14."):
+            break
+        if not in_table or not _looks_like_target_bias_row(line):
+            continue
+        rows.append(_parse_target_bias_row(line))
+
+    if not rows:
+        raise ValueError(f"No FACETS target bias rows found in {report_path}")
+
+    target_terms = pd.DataFrame(rows)
+    counts = _load_target_label_counts(config)
+    if counts is not None:
+        target_terms = target_terms.merge(counts, on="target_identity", how="left")
+    return target_terms.sort_values("beta_jm", kind="stable").reset_index(drop=True)
 
 
 def parse_target_pairwise_contrasts(report_path: Path) -> pd.DataFrame:
@@ -208,12 +231,16 @@ def build_target_identity_labels(config: TargetDRFConfig) -> pd.DataFrame:
         split=config.split,
         config_name=None,
     )
-    detailed_target_columns = [column for columns in TARGET_GROUP_COLUMNS.values() for column in columns]
+    detailed_target_columns = [
+        column for columns in TARGET_GROUP_COLUMNS.values() for column in columns
+    ]
     selected = dataset[["comment_id", *detailed_target_columns]].copy()
     selected[detailed_target_columns] = selected[detailed_target_columns].fillna(False).astype(bool)
 
     annotator_counts = selected.groupby("comment_id").size().rename("n_annotators")
-    target_shares = selected.groupby("comment_id")[detailed_target_columns].mean().join(annotator_counts)
+    target_shares = (
+        selected.groupby("comment_id")[detailed_target_columns].mean().join(annotator_counts)
+    )
     target_shares = target_shares.loc[target_shares["n_annotators"] >= config.min_annotators].copy()
 
     agreement_mask = target_shares[detailed_target_columns] >= config.agreement_threshold
@@ -222,7 +249,9 @@ def build_target_identity_labels(config: TargetDRFConfig) -> pd.DataFrame:
     single_target["target_identity"] = single_target["raw_target"].map(
         lambda value: config.collapse_targets.get(value, value)
     )
-    single_target = single_target.loc[~single_target["raw_target"].isin(config.exclude_targets)].copy()
+    single_target = single_target.loc[
+        ~single_target["raw_target"].isin(config.exclude_targets)
+    ].copy()
 
     target_counts = single_target["target_identity"].value_counts()
     kept_targets = target_counts.loc[target_counts >= config.min_comments_per_target].index
@@ -232,7 +261,9 @@ def build_target_identity_labels(config: TargetDRFConfig) -> pd.DataFrame:
 
     target_id_map = {
         target_identity: str(index)
-        for index, target_identity in enumerate(sorted(single_target["target_identity"].unique()), start=1)
+        for index, target_identity in enumerate(
+            sorted(single_target["target_identity"].unique()), start=1
+        )
     }
     single_target["target_id"] = single_target["target_identity"].map(target_id_map)
     single_target["target_share"] = [
@@ -240,14 +271,16 @@ def build_target_identity_labels(config: TargetDRFConfig) -> pd.DataFrame:
         for comment_id, raw_target in single_target["raw_target"].items()
     ]
     return (
-        single_target.reset_index()[[
-            "comment_id",
-            "n_annotators",
-            "raw_target",
-            "target_identity",
-            "target_id",
-            "target_share",
-        ]]
+        single_target.reset_index()[
+            [
+                "comment_id",
+                "n_annotators",
+                "raw_target",
+                "target_identity",
+                "target_id",
+                "target_share",
+            ]
+        ]
         .sort_values(["target_identity", "comment_id"], kind="stable")
         .reset_index(drop=True)
     )
@@ -323,6 +356,74 @@ def _parse_pairwise_contrast(text: str) -> dict[str, object]:
     }
 
 
+def _looks_like_target_bias_row(line: str) -> bool:
+    """Return whether one report line has the Table 13 target-bias shape."""
+
+    parts = line.split("|")
+    return (
+        len(parts) >= 5
+        and bool(re.match(r"^\s*\d", parts[1]))
+        and "target_" in parts[4]
+        and bool(re.match(r"^\s*\d+\s+\d+\s+", parts[4]))
+    )
+
+
+def _parse_target_bias_row(line: str) -> dict[str, object]:
+    """Parse one FACETS Table 13 judge-by-target beta row."""
+
+    parts = line.split("|")
+    score_values = parts[1].split()
+    beta_values = parts[2].split()
+    fit_values = parts[3].split()
+    identity_values = _parse_target_bias_identity(parts[4])
+
+    if len(score_values) != 4 or len(beta_values) != 5 or len(fit_values) != 2:
+        raise ValueError(f"Unexpected FACETS target bias row format: {line}")
+
+    return {
+        "observed_score": _to_float(score_values[0]),
+        "expected_score": _to_float(score_values[1]),
+        "observed_count": int(_to_float(score_values[2])),
+        "obs_exp_average": _to_float(score_values[3]),
+        "beta_jm": _to_float(beta_values[0]),
+        "beta_se": _to_float(beta_values[1]),
+        "t": _to_float(beta_values[2]),
+        "df": int(_to_float(beta_values[3])),
+        "p_value": _to_float(beta_values[4]),
+        "infit_mnsq": _to_float(fit_values[0]),
+        "outfit_mnsq": _to_float(fit_values[1]),
+        **identity_values,
+    }
+
+
+def _parse_target_bias_identity(identity_text: str) -> dict[str, object]:
+    """Parse judge and target labels from a FACETS Table 13 beta row."""
+
+    number_pattern = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)"
+    match = re.match(
+        rf"^\s*(?P<beta_sequence>\d+)\s+"
+        rf"(?P<judge_id>\d+)\s+"
+        rf"(?P<judge_label>.+?)\s+"
+        rf"(?P<judge_measure>{number_pattern})\s+"
+        rf"(?P<target_id>\d+)\s+"
+        rf"(?P<target_identity>\S+)\s+"
+        rf"(?P<target_anchor>{number_pattern})\s*$",
+        identity_text,
+    )
+    if match is None:
+        raise ValueError(f"Unexpected FACETS target bias identity format: {identity_text}")
+
+    return {
+        "beta_sequence": int(match.group("beta_sequence")),
+        "judge_id": int(match.group("judge_id")),
+        "judge_label": match.group("judge_label").strip(),
+        "judge_measure": _to_float(match.group("judge_measure")),
+        "target_id": int(match.group("target_id")),
+        "target_identity": match.group("target_identity"),
+        "target_anchor": _to_float(match.group("target_anchor")),
+    }
+
+
 def _to_float(value: str) -> float:
     """Convert FACETS compact decimal text to float."""
 
@@ -333,6 +434,22 @@ def _to_float(value: str) -> float:
     return float(value)
 
 
+def _load_target_label_counts(config: TargetDRFConfig) -> pd.DataFrame | None:
+    """Load target comment counts when the target-label file exists."""
+
+    if not config.target_labels_path.exists():
+        return None
+    labels = pd.read_csv(config.target_labels_path)
+    return (
+        labels.groupby("target_identity")
+        .agg(
+            comment_count=("comment_id", "nunique"),
+            mean_target_share=("target_share", "mean"),
+        )
+        .reset_index()
+    )
+
+
 def filter_target_labels_to_annotations(
     target_labels: pd.DataFrame,
     annotations: pd.DataFrame,
@@ -341,7 +458,9 @@ def filter_target_labels_to_annotations(
     """Keep only target labels represented in the provided annotation dataset."""
 
     annotation_comment_ids = set(annotations["comment_id"].astype(int).tolist())
-    selected = target_labels.loc[target_labels["comment_id"].astype(int).isin(annotation_comment_ids)].copy()
+    selected = target_labels.loc[
+        target_labels["comment_id"].astype(int).isin(annotation_comment_ids)
+    ].copy()
     target_counts = selected["target_identity"].value_counts()
     kept_targets = target_counts.loc[target_counts >= min_comments_per_target].index
     selected = selected.loc[selected["target_identity"].isin(kept_targets)].copy()
@@ -350,10 +469,14 @@ def filter_target_labels_to_annotations(
 
     target_id_map = {
         target_identity: str(index)
-        for index, target_identity in enumerate(sorted(selected["target_identity"].unique()), start=1)
+        for index, target_identity in enumerate(
+            sorted(selected["target_identity"].unique()), start=1
+        )
     }
     selected["target_id"] = selected["target_identity"].map(target_id_map)
-    return selected.sort_values(["target_identity", "comment_id"], kind="stable").reset_index(drop=True)
+    return selected.sort_values(["target_identity", "comment_id"], kind="stable").reset_index(
+        drop=True
+    )
 
 
 def build_target_drf_facets_frame(dataframe: pd.DataFrame) -> pd.DataFrame:
@@ -432,7 +555,7 @@ def build_target_drf_facets_spec(
         f"{_build_anchor_label_block(1, 'Comments', comment_ids, comment_label_map, relevant_comment_anchors)}\n"
         f"{_build_anchor_label_block(2, 'Judges', judge_ids, judge_label_map, relevant_judge_anchors)}\n"
         f"{_build_anchor_label_block(3, 'Items', item_ids, dict(enumerate(ITEM_NAMES, start=1)), relevant_item_anchors, anchor_key_by_label=True)}\n"
-        f"{_build_plain_label_block(4, 'Targets', target_ids, target_label_map)}\n\n"
+        f"{_build_target_label_block(config, target_ids, target_label_map)}\n\n"
         f"Data = {config.facets_data_filename}\n"
     )
 
@@ -496,3 +619,16 @@ def _build_plain_label_block(
         label_lines.append(f"{element_id}={labels[element_id]}")
     label_lines.append("*")
     return "\n".join(label_lines)
+
+
+def _build_target_label_block(
+    config: TargetDRFConfig,
+    target_ids: list[str],
+    target_label_map: dict[str, str],
+) -> str:
+    """Build the target facet as measured or dummy-anchored labels."""
+
+    if not config.anchor_targets:
+        return _build_plain_label_block(4, "Targets", target_ids, target_label_map)
+    target_anchors = {target_id: 0.0 for target_id in target_ids}
+    return _build_anchor_label_block(4, "Targets", target_ids, target_label_map, target_anchors)

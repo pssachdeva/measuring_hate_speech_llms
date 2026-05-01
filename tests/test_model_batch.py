@@ -593,6 +593,7 @@ def test_create_google_batch_uploads_jsonl_and_uses_uploaded_file_name(
             [
                 {
                     "contents": [{"parts": [{"text": "just the comment"}], "role": "user"}],
+                    "metadata": {"key": "comment-1"},
                     "config": {
                         "max_output_tokens": 256,
                         "thinking_config": {"thinking_level": "low"},
@@ -726,6 +727,70 @@ def test_download_provider_results_reads_google_output_file(monkeypatch, tmp_pat
 
     assert rows[0]["key"] == "comment-1"
     assert rows[0]["response"]["candidates"][0]["content"]["parts"][0]["text"] == '{"hate_speech":"B"}'
+
+
+def test_download_provider_results_uses_google_inline_metadata_keys(tmp_path: Path) -> None:
+    config = ModelBatchConfig(
+        name="test-google",
+        subset="reference_set",
+        limit=2,
+        prompt=BatchPromptConfig(
+            system_prompt_path=Path("prompts/mhs_survey_v1.txt"),
+            user_prompt_template="",
+        ),
+        model=BatchModelConfig(
+            provider="google",
+            name="gemini-2.5-pro",
+            id="google:gemini-2.5-pro",
+            max_tokens=256,
+            params={},
+            reasoning=BatchReasoningConfig(),
+        ),
+        batches=BatchStorageConfig(
+            run_dir=tmp_path / "batches",
+            request_manifest_filename="request_manifest.jsonl",
+            provider_requests_filename="provider_requests.jsonl",
+            batch_metadata_filename="batch_job.json",
+            raw_results_filename="raw_results.jsonl",
+            processed_records_filename="processed_records.jsonl",
+            processed_csv_filename="processed_records.csv",
+            errors_filename="processing_errors.jsonl",
+        ),
+    )
+    config.batches.run_dir.mkdir(parents=True)
+    (config.batches.run_dir / config.batches.request_manifest_filename).write_text(
+        "\n".join(
+            [
+                json.dumps({"comment_id": 1, "custom_id": "comment-1", "text": "first"}),
+                json.dumps({"comment_id": 2, "custom_id": "comment-2", "text": "second"}),
+            ]
+        )
+        + "\n"
+    )
+
+    class DummyDest:
+        inlined_responses = [
+            {
+                "metadata": {"key": "comment-2"},
+                "response": {
+                    "candidates": [{"content": {"parts": [{"text": '{"hate_speech":"C"}'}]}}]
+                },
+            },
+            {
+                "metadata": {"key": "comment-1"},
+                "response": {
+                    "candidates": [{"content": {"parts": [{"text": '{"hate_speech":"A"}'}]}}]
+                },
+            },
+        ]
+
+    class DummyBatch:
+        dest = DummyDest()
+
+    rows = _download_provider_results(config=config, batch_object=DummyBatch())
+
+    assert [row["custom_id"] for row in rows] == ["comment-2", "comment-1"]
+    assert rows[0]["metadata"]["key"] == "comment-2"
 
 
 def test_download_provider_results_reads_paginated_xai_results(monkeypatch, tmp_path: Path) -> None:
@@ -865,6 +930,18 @@ def test_select_comment_ids_uses_annotator_count_threshold() -> None:
     )
 
     assert comment_ids == [20]
+
+
+def test_select_comment_ids_reads_comment_ids_file(tmp_path: Path) -> None:
+    comment_ids_path = tmp_path / "comment_ids.csv"
+    pd.DataFrame({"comment_id": [30, 10, 30, 20]}).to_csv(comment_ids_path, index=False)
+
+    comment_ids = _select_comment_ids(
+        pd.DataFrame([{"comment_id": 999, "platform": 0, "text": "ignored"}]),
+        {"type": "comment_ids_file", "path": str(comment_ids_path)},
+    )
+
+    assert comment_ids == [30, 10, 20]
 
 
 def test_write_processed_annotations_rewrites_csv_without_duplicates(tmp_path: Path) -> None:
