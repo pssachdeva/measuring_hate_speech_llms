@@ -8,6 +8,7 @@ targets:
   min_annotators: 4
   agreement_threshold: 0.75
   min_comments_per_target: 50
+  anchor_targets: true
   collapse:
     target_origin_specific_country: target_origin
     target_origin_immigrant: target_origin
