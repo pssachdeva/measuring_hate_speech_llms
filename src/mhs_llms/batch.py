@@ -768,17 +768,16 @@ def _download_provider_results(config: ModelBatchConfig, batch_object: Any) -> l
                     f"({len(response_rows)} != {len(request_manifest)})"
                 )
             results: list[dict[str, Any]] = []
-            for manifest_entry, response_row in zip(request_manifest, response_rows, strict=True):
+            for response_row in response_rows:
                 entry = dict(response_row)
                 metadata = entry.get("metadata")
                 metadata_key = metadata.get("key") if isinstance(metadata, dict) else None
-                if metadata_key is not None:
-                    entry.setdefault("custom_id", str(metadata_key))
-                else:
-                    # Older Google inline runs did not preserve metadata. Keep
-                    # the positional fallback for compatibility, but new runs
-                    # should carry metadata so out-of-order responses are safe.
-                    entry.setdefault("custom_id", str(manifest_entry["custom_id"]))
+                if metadata_key is None:
+                    raise ValueError(
+                        "Google inline batch response did not include metadata.key; "
+                        "refusing to assign comment ids positionally"
+                    )
+                entry.setdefault("custom_id", str(metadata_key))
                 results.append(entry)
             return results
 

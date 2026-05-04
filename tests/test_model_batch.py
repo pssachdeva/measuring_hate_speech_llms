@@ -2,6 +2,7 @@ from pathlib import Path
 import json
 
 import pandas as pd
+import pytest
 
 from mhs_llms.batch import (
     _build_requests,
@@ -791,6 +792,57 @@ def test_download_provider_results_uses_google_inline_metadata_keys(tmp_path: Pa
 
     assert [row["custom_id"] for row in rows] == ["comment-2", "comment-1"]
     assert rows[0]["metadata"]["key"] == "comment-2"
+
+
+def test_download_provider_results_rejects_google_inline_without_metadata_key(
+    tmp_path: Path,
+) -> None:
+    config = ModelBatchConfig(
+        name="test-google",
+        subset="reference_set",
+        limit=1,
+        prompt=BatchPromptConfig(
+            system_prompt_path=Path("prompts/mhs_survey_v1.txt"),
+            user_prompt_template="",
+        ),
+        model=BatchModelConfig(
+            provider="google",
+            name="gemini-2.5-pro",
+            id="google:gemini-2.5-pro",
+            max_tokens=256,
+            params={},
+            reasoning=BatchReasoningConfig(),
+        ),
+        batches=BatchStorageConfig(
+            run_dir=tmp_path / "batches",
+            request_manifest_filename="request_manifest.jsonl",
+            provider_requests_filename="provider_requests.jsonl",
+            batch_metadata_filename="batch_job.json",
+            raw_results_filename="raw_results.jsonl",
+            processed_records_filename="processed_records.jsonl",
+            processed_csv_filename="processed_records.csv",
+            errors_filename="processing_errors.jsonl",
+        ),
+    )
+    config.batches.run_dir.mkdir(parents=True)
+    (config.batches.run_dir / config.batches.request_manifest_filename).write_text(
+        json.dumps({"comment_id": 1, "custom_id": "comment-1", "text": "first"}) + "\n"
+    )
+
+    class DummyDest:
+        inlined_responses = [
+            {
+                "response": {
+                    "candidates": [{"content": {"parts": [{"text": '{"hate_speech":"C"}'}]}}]
+                },
+            },
+        ]
+
+    class DummyBatch:
+        dest = DummyDest()
+
+    with pytest.raises(ValueError, match="refusing to assign comment ids positionally"):
+        _download_provider_results(config=config, batch_object=DummyBatch())
 
 
 def test_download_provider_results_reads_paginated_xai_results(monkeypatch, tmp_path: Path) -> None:
