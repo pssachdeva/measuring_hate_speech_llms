@@ -122,6 +122,24 @@ class SeverityDecompositionConfig:
 
 
 @dataclass(frozen=True)
+class OrderEffectConfig:
+    """Config for a pooled FACETS run estimating an order-condition effect."""
+
+    original_annotation_paths: tuple[Path, ...]
+    reverse_annotation_paths: tuple[Path, ...]
+    comment_scores_path: Path
+    item_scores_path: Path
+    facets_run_dir: Path
+    facets_data_filename: str
+    facets_spec_filename: str
+    facets_score_filename: str
+    facets_output_filename: str
+    original_order_label: str
+    reverse_order_label: str
+    facets: FacetsConfig
+
+
+@dataclass(frozen=True)
 class TargetDRFConfig:
     """Config for a FACETS run estimating LLM judge-by-target interactions."""
 
@@ -456,6 +474,36 @@ def load_severity_decomposition_config(config_path: Path) -> SeverityDecompositi
             data["output"].get("facets_output_filename", "severity_decomposition_output.txt")
         ),
         facets=_parse_facets_config(data["facets"], default_model="?, ?B, #B, R"),
+    )
+
+
+def load_order_effect_config(config_path: Path) -> OrderEffectConfig:
+    """Load config for the pooled original/reverse order FACETS run."""
+
+    config_path = config_path.resolve()
+    data = yaml.safe_load(config_path.read_text())
+    annotations = data["annotations"]
+    original_values = annotations.get("original_paths")
+    if original_values is None:
+        original_values = [annotations["original_path"]]
+    reverse_values = annotations.get("reverse_paths")
+    if reverse_values is None:
+        reverse_values = [annotations["reverse_path"]]
+
+    order_data = data.get("order", {})
+    return OrderEffectConfig(
+        original_annotation_paths=tuple(_resolve_path(path_value) for path_value in original_values),
+        reverse_annotation_paths=tuple(_resolve_path(path_value) for path_value in reverse_values),
+        comment_scores_path=_resolve_path(data["anchors"]["comment_scores_path"]),
+        item_scores_path=_resolve_path(data["anchors"]["item_scores_path"]),
+        facets_run_dir=_resolve_path(data["output"]["facets_run_dir"]),
+        facets_data_filename=str(data["output"].get("facets_data_filename", "order_effect_data.tsv")),
+        facets_spec_filename=str(data["output"].get("facets_spec_filename", "order_effect_spec.txt")),
+        facets_score_filename=str(data["output"].get("facets_score_filename", "order_effect_scores.txt")),
+        facets_output_filename=str(data["output"].get("facets_output_filename", "order_effect_output.txt")),
+        original_order_label=str(order_data.get("original_label", "original_order")),
+        reverse_order_label=str(order_data.get("reverse_label", "reverse_order")),
+        facets=_parse_facets_config(data["facets"], default_model="?, ?, #, ?, R"),
     )
 
 

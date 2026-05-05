@@ -4,10 +4,29 @@ import pandas as pd
 
 from mhs_llms.config import load_llm_facets_config
 from mhs_llms.llm_facets import run_anchored_llm_facets
+from mhs_llms.schema import ITEM_NAMES
 
 
-def test_load_llm_facets_config_resolves_paths() -> None:
-    config = load_llm_facets_config(Path("configs/reference_llm_facets.yaml"))
+def test_load_llm_facets_config_resolves_paths(tmp_path: Path) -> None:
+    config_path = tmp_path / "reference_llm_facets.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "annotations:",
+                "  paths:",
+                "    - data/reference_set.csv",
+                "anchors:",
+                "  comment_scores_path: facets/human_baseline/human_facets_scores.1.txt",
+                "  item_scores_path: facets/human_baseline/human_facets_scores.3.txt",
+                "output:",
+                "  facets_run_dir: facets/llm_severities",
+                "facets:",
+                "  title: Reference LLM FACETS",
+            ]
+        )
+    )
+
+    config = load_llm_facets_config(config_path)
 
     assert config.annotation_paths[0] == (Path.cwd() / "data" / "reference_set.csv").resolve()
     assert config.comment_scores_path == (
@@ -53,13 +72,15 @@ def test_load_llm_facets_config_resolves_nested_config_paths_from_cwd(tmp_path: 
 
 
 def test_run_anchored_llm_facets_writes_outputs(tmp_path: Path) -> None:
+    annotation_path = tmp_path / "reference_set.csv"
+    _annotation_frame(comment_id=20001, judge_id="model_a").to_csv(annotation_path, index=False)
     config_path = tmp_path / "llm_facets.yaml"
     config_path.write_text(
         "\n".join(
             [
                 "annotations:",
                 "  paths:",
-                f"    - {Path('data/reference_set.csv').resolve()}",
+                f"    - {annotation_path}",
                 "anchors:",
                 f"  comment_scores_path: {Path('facets/human_baseline/human_facets_scores.1.txt').resolve()}",
                 f"  item_scores_path: {Path('facets/human_baseline/human_facets_scores.3.txt').resolve()}",
@@ -82,7 +103,13 @@ def test_run_anchored_llm_facets_writes_outputs(tmp_path: Path) -> None:
 
 
 def test_run_anchored_llm_facets_assigns_new_judge_ids_automatically(tmp_path: Path) -> None:
-    annotations = pd.read_csv(Path("data/reference_set.csv").resolve()).head(2).copy()
+    annotations = pd.concat(
+        [
+            _annotation_frame(comment_id=20001, judge_id="model_a"),
+            _annotation_frame(comment_id=20002, judge_id="model_b"),
+        ],
+        ignore_index=True,
+    )
     annotations["judge_id"] = ["openai_gpt-5.4_low", "openai_gpt-5.4_medium"]
     annotation_path = tmp_path / "novel_judges.csv"
     annotations.to_csv(annotation_path, index=False)
@@ -115,3 +142,16 @@ def test_run_anchored_llm_facets_assigns_new_judge_ids_automatically(tmp_path: P
     assert outputs.facets_data_path.exists()
     assert "openai_gpt-5.4_low" in spec_text
     assert "openai_gpt-5.4_medium" in spec_text
+
+
+def _annotation_frame(comment_id: int, judge_id: str) -> pd.DataFrame:
+    """Build one minimal processed LLM annotation row using prompt letters."""
+
+    row = {
+        "comment_id": comment_id,
+        "judge_id": judge_id,
+    }
+    for item_name in ITEM_NAMES:
+        row[item_name] = "B"
+    row["hate_speech"] = "A"
+    return pd.DataFrame([row])
