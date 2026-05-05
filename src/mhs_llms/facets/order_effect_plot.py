@@ -70,6 +70,8 @@ class OrderShiftPlotStyle:
     left_band_row_interval: int
     left_band_row_remainder: int
     right_face_color: str
+    right_spines_visible: bool
+    right_y_ticks_visible: bool
     grid_axis: str
     grid_alpha: float
     x_tick_label_size: float
@@ -178,6 +180,7 @@ def load_pooled_order_delta(order_contrast_path: Path) -> tuple[float, float | N
 def plot_order_shift_comparison(
     comparison: pd.DataFrame,
     output_path: Path,
+    style: OrderShiftPlotStyle,
     pooled_delta: float | None = None,
     pooled_delta_se: float | None = None,
 ) -> Path:
@@ -189,55 +192,55 @@ def plot_order_shift_comparison(
 
     row_count = len(comparison)
     figure, (severity_axis, delta_axis) = plt.subplots(
-        SUBPLOT_ROW_COUNT,
-        SUBPLOT_COLUMN_COUNT,
+        style.subplot_row_count,
+        style.subplot_column_count,
         figsize=(
-            FIGURE_WIDTH,
-            max(FIGURE_MIN_HEIGHT, row_count * FIGURE_ROW_HEIGHT + FIGURE_HEIGHT_PADDING),
+            style.figure_width,
+            max(style.figure_min_height, row_count * style.figure_row_height + style.figure_height_padding),
         ),
-        gridspec_kw={"width_ratios": SUBPLOT_WIDTH_RATIOS, "wspace": SUBPLOT_WSPACE},
+        gridspec_kw={"width_ratios": style.subplot_width_ratios, "wspace": style.subplot_wspace},
     )
     y_positions = list(range(row_count))
     colors = [get_provider_color(provider) for provider in comparison["provider"].tolist()]
 
     for y_position in y_positions:
-        if y_position % LEFT_BAND_ROW_INTERVAL == LEFT_BAND_ROW_REMAINDER:
+        if y_position % style.left_band_row_interval == style.left_band_row_remainder:
             severity_axis.axhspan(
-                y_position - LEFT_BAND_HALF_HEIGHT,
-                y_position + LEFT_BAND_HALF_HEIGHT,
-                color=LEFT_BAND_COLOR,
-                zorder=LEFT_BAND_ZORDER,
+                y_position - style.left_band_half_height,
+                y_position + style.left_band_half_height,
+                color=style.left_band_color,
+                zorder=style.left_band_zorder,
             )
 
     for y_position, row, color in zip(y_positions, comparison.itertuples(index=False), colors, strict=True):
-        original_y = y_position - SEVERITY_CONDITION_Y_OFFSET
-        reverse_y = y_position + SEVERITY_CONDITION_Y_OFFSET
+        original_y = y_position - style.severity_condition_y_offset
+        reverse_y = y_position + style.severity_condition_y_offset
         severity_axis.errorbar(
             row.original_measure,
             original_y,
             xerr=row.original_s_e,
-            fmt=MARKER_FORMAT,
+            fmt=style.marker_format,
             color=color,
-            ecolor=SEVERITY_ERROR_COLOR,
-            capsize=SEVERITY_ERROR_CAPSIZE,
-            markerfacecolor=color if SEVERITY_ORIGINAL_MARKER_FACE is None else SEVERITY_ORIGINAL_MARKER_FACE,
+            ecolor=style.severity_error_color,
+            capsize=style.severity_error_capsize,
+            markerfacecolor=color if style.severity_original_marker_face is None else style.severity_original_marker_face,
             markeredgecolor=color,
-            markersize=SEVERITY_MARKER_SIZE,
-            zorder=SEVERITY_ORIGINAL_ZORDER,
+            markersize=style.severity_marker_size,
+            zorder=style.severity_original_zorder,
         )
         severity_axis.errorbar(
             row.reverse_measure,
             reverse_y,
             xerr=row.reverse_s_e,
-            fmt=MARKER_FORMAT,
+            fmt=style.marker_format,
             color=color,
-            ecolor=SEVERITY_ERROR_COLOR,
-            capsize=SEVERITY_ERROR_CAPSIZE,
-            markerfacecolor=SEVERITY_REVERSE_MARKER_FACE,
+            ecolor=style.severity_error_color,
+            capsize=style.severity_error_capsize,
+            markerfacecolor=style.severity_reverse_marker_face,
             markeredgecolor=color,
-            markeredgewidth=SEVERITY_MARKER_EDGE_WIDTH,
-            markersize=SEVERITY_MARKER_SIZE,
-            zorder=SEVERITY_REVERSE_ZORDER,
+            markeredgewidth=style.severity_marker_edge_width,
+            markersize=style.severity_marker_size,
+            zorder=style.severity_reverse_zorder,
         )
 
     odds_ratio = comparison["severity_delta"].map(math.exp)
@@ -246,6 +249,7 @@ def plot_order_shift_comparison(
     balanced_log_limit = _balanced_log_limit(
         lower_log_values=comparison["severity_delta"] - comparison["delta_se_independent"],
         upper_log_values=comparison["severity_delta"] + comparison["delta_se_independent"],
+        style=style,
     )
     xerr = [odds_ratio - lower_ratio, upper_ratio - odds_ratio]
     for y_position, ratio, error, color in zip(
@@ -259,14 +263,14 @@ def plot_order_shift_comparison(
             ratio,
             y_position,
             xerr=[[error[0]], [error[1]]],
-            fmt=MARKER_FORMAT,
+            fmt=style.marker_format,
             color=color,
-            ecolor=ODDS_RATIO_ERROR_COLOR,
-            capsize=ODDS_RATIO_ERROR_CAPSIZE,
-            markersize=ODDS_RATIO_MARKER_SIZE,
-            markeredgecolor=ODDS_RATIO_MARKER_EDGE_COLOR,
-            markeredgewidth=ODDS_RATIO_MARKER_EDGE_WIDTH,
-            zorder=ODDS_RATIO_ZORDER,
+            ecolor=style.odds_ratio_error_color,
+            capsize=style.odds_ratio_error_capsize,
+            markersize=style.odds_ratio_marker_size,
+            markeredgecolor=style.odds_ratio_marker_edge_color,
+            markeredgewidth=style.odds_ratio_marker_edge_width,
+            zorder=style.odds_ratio_zorder,
         )
     if pooled_delta is not None:
         pooled_ratio = math.exp(pooled_delta)
@@ -274,116 +278,118 @@ def plot_order_shift_comparison(
             delta_axis.axvspan(
                 math.exp(pooled_delta - pooled_delta_se),
                 math.exp(pooled_delta + pooled_delta_se),
-                color=POOLED_BAND_COLOR,
-                alpha=POOLED_BAND_ALPHA,
-                zorder=POOLED_BAND_ZORDER,
+                color=style.pooled_band_color,
+                alpha=style.pooled_band_alpha,
+                zorder=style.pooled_band_zorder,
             )
         delta_axis.axvline(
             pooled_ratio,
-            color=POOLED_LINE_COLOR,
-            linestyle=POOLED_LINE_STYLE,
-            linewidth=POOLED_LINE_WIDTH,
-            zorder=POOLED_LINE_ZORDER,
+            color=style.pooled_line_color,
+            linestyle=style.pooled_line_style,
+            linewidth=style.pooled_line_width,
+            zorder=style.pooled_line_zorder,
         )
-    delta_axis.set_xscale(ODDS_RATIO_SCALE)
-    odds_xlim = (math.exp(-balanced_log_limit), math.exp(balanced_log_limit))
+    odds_xlim = _odds_ratio_xlim(balanced_log_limit, style)
     delta_axis.set_xlim(*odds_xlim)
-    _set_odds_ratio_ticks(delta_axis, odds_xlim)
-    _add_significance_markers(delta_axis, comparison)
+    _set_odds_ratio_ticks(delta_axis, odds_xlim, style)
+    _add_significance_markers(delta_axis, comparison, style)
 
     labels = format_plot_text(comparison["display_label"].tolist())
     severity_axis.set_yticks(y_positions)
-    severity_axis.set_yticklabels(labels, fontsize=Y_TICK_LABEL_SIZE)
+    severity_axis.set_yticklabels(labels, fontsize=style.y_tick_label_size)
     delta_axis.set_yticks(y_positions)
-    delta_axis.set_yticklabels([EMPTY_Y_TICK_LABEL for _ in y_positions])
-    shared_y_limits = (row_count - LEFT_BAND_HALF_HEIGHT, -LEFT_BAND_HALF_HEIGHT)
+    delta_axis.set_yticklabels([style.empty_y_tick_label for _ in y_positions])
+    delta_axis.tick_params(axis="y", left=style.right_y_ticks_visible)
+    shared_y_limits = (row_count - style.left_band_half_height, -style.left_band_half_height)
     severity_axis.set_ylim(*shared_y_limits)
     delta_axis.set_ylim(*shared_y_limits)
 
     severity_axis.axvline(
-        SEVERITY_NULL_LINE_VALUE,
-        color=SEVERITY_NULL_LINE_COLOR,
-        linewidth=SEVERITY_NULL_LINE_WIDTH,
-        linestyle=SEVERITY_NULL_LINE_STYLE,
+        style.severity_null_line_value,
+        color=style.severity_null_line_color,
+        linewidth=style.severity_null_line_width,
+        linestyle=style.severity_null_line_style,
     )
     delta_axis.axvline(
-        ODDS_RATIO_NULL_VALUE,
-        color=ODDS_RATIO_NULL_LINE_COLOR,
-        linewidth=ODDS_RATIO_NULL_LINE_WIDTH,
+        style.odds_ratio_null_value,
+        color=style.odds_ratio_null_line_color,
+        linewidth=style.odds_ratio_null_line_width,
     )
-    delta_axis.set_facecolor(RIGHT_FACE_COLOR)
-    severity_axis.set_xlabel(format_plot_text(SEVERITY_XLABEL))
-    delta_axis.set_xlabel(format_plot_text(ODDS_RATIO_XLABEL))
-    severity_axis.grid(axis=GRID_AXIS, alpha=GRID_ALPHA)
-    delta_axis.grid(axis=GRID_AXIS, alpha=GRID_ALPHA)
-    severity_axis.tick_params(axis=GRID_AXIS, labelsize=X_TICK_LABEL_SIZE)
-    delta_axis.tick_params(axis=GRID_AXIS, labelsize=X_TICK_LABEL_SIZE)
+    delta_axis.set_facecolor(style.right_face_color)
+    for spine in delta_axis.spines.values():
+        spine.set_visible(style.right_spines_visible)
+    severity_axis.set_xlabel(format_plot_text(style.severity_xlabel))
+    delta_axis.set_xlabel(format_plot_text(style.odds_ratio_xlabel))
+    severity_axis.grid(axis=style.grid_axis, alpha=style.grid_alpha)
+    delta_axis.grid(axis=style.grid_axis, alpha=style.grid_alpha)
+    severity_axis.tick_params(axis=style.grid_axis, labelsize=style.x_tick_label_size)
+    delta_axis.tick_params(axis=style.grid_axis, labelsize=style.x_tick_label_size)
     severity_axis.text(
-        PANEL_A_LABEL_X,
-        PANEL_LABEL_Y,
-        format_plot_text(PANEL_A_LABEL),
+        style.panel_a_label_x,
+        style.panel_label_y,
+        format_plot_text(style.panel_a_label),
         transform=severity_axis.transAxes,
-        fontsize=SUBPLOT_LABEL_SIZE,
-        ha=SUBPLOT_LABEL_HORIZONTAL_ALIGNMENT,
-        va=SUBPLOT_LABEL_VERTICAL_ALIGNMENT,
+        fontsize=style.subplot_label_size,
+        ha=style.subplot_label_horizontal_alignment,
+        va=style.subplot_label_vertical_alignment,
     )
     delta_axis.text(
-        PANEL_B_LABEL_X,
-        PANEL_LABEL_Y,
-        format_plot_text(PANEL_B_LABEL),
+        style.panel_b_label_x,
+        style.panel_label_y,
+        format_plot_text(style.panel_b_label),
         transform=delta_axis.transAxes,
-        fontsize=SUBPLOT_LABEL_SIZE,
-        ha=SUBPLOT_LABEL_HORIZONTAL_ALIGNMENT,
-        va=SUBPLOT_LABEL_VERTICAL_ALIGNMENT,
+        fontsize=style.subplot_label_size,
+        ha=style.subplot_label_horizontal_alignment,
+        va=style.subplot_label_vertical_alignment,
     )
     delta_axis.text(
-        DIRECTION_LEFT_X,
-        DIRECTION_LABEL_Y,
-        format_plot_text(DIRECTION_LEFT_LABEL),
+        style.direction_left_x,
+        style.direction_label_y,
+        format_plot_text(style.direction_left_label),
         transform=delta_axis.transAxes,
-        fontsize=DIRECTION_LABEL_SIZE,
-        ha=DIRECTION_LEFT_HORIZONTAL_ALIGNMENT,
-        va=DIRECTION_VERTICAL_ALIGNMENT,
+        fontsize=style.direction_label_size,
+        ha=style.direction_left_horizontal_alignment,
+        va=style.direction_vertical_alignment,
     )
     delta_axis.text(
-        DIRECTION_RIGHT_X,
-        DIRECTION_LABEL_Y,
-        format_plot_text(DIRECTION_RIGHT_LABEL),
+        style.direction_right_x,
+        style.direction_label_y,
+        format_plot_text(style.direction_right_label),
         transform=delta_axis.transAxes,
-        fontsize=DIRECTION_LABEL_SIZE,
-        ha=DIRECTION_RIGHT_HORIZONTAL_ALIGNMENT,
-        va=DIRECTION_VERTICAL_ALIGNMENT,
+        fontsize=style.direction_label_size,
+        ha=style.direction_right_horizontal_alignment,
+        va=style.direction_vertical_alignment,
     )
 
     legend_handles = [
         Line2D(
-            LEGEND_LINE_COORDINATES,
-            LEGEND_LINE_COORDINATES,
-            marker=MARKER_FORMAT,
-            color=LEGEND_LINE_COLOR,
-            markerfacecolor=LEGEND_MARKER_COLOR,
-            markeredgecolor=LEGEND_MARKER_COLOR,
-            label=LEGEND_ORIGINAL_LABEL,
-            markersize=SEVERITY_MARKER_SIZE,
+            style.legend_line_coordinates,
+            style.legend_line_coordinates,
+            marker=style.marker_format,
+            color=style.legend_line_color,
+            markerfacecolor=style.legend_marker_color,
+            markeredgecolor=style.legend_marker_color,
+            label=style.legend_original_label,
+            markersize=style.severity_marker_size,
         ),
         Line2D(
-            LEGEND_LINE_COORDINATES,
-            LEGEND_LINE_COORDINATES,
-            marker=MARKER_FORMAT,
-            color=LEGEND_LINE_COLOR,
-            markerfacecolor=SEVERITY_REVERSE_MARKER_FACE,
-            markeredgecolor=LEGEND_MARKER_COLOR,
-            markeredgewidth=SEVERITY_MARKER_EDGE_WIDTH,
-            label=LEGEND_REVERSE_LABEL,
-            markersize=SEVERITY_MARKER_SIZE,
+            style.legend_line_coordinates,
+            style.legend_line_coordinates,
+            marker=style.marker_format,
+            color=style.legend_line_color,
+            markerfacecolor=style.severity_reverse_marker_face,
+            markeredgecolor=style.legend_marker_color,
+            markeredgewidth=style.severity_marker_edge_width,
+            label=style.legend_reverse_label,
+            markersize=style.severity_marker_size,
         ),
     ]
     severity_axis.legend(
         handles=legend_handles,
-        loc=LEGEND_LOCATION,
-        fontsize=LEGEND_FONT_SIZE,
-        markerscale=LEGEND_MARKER_SCALE,
-        frameon=LEGEND_FRAME_ON,
+        loc=style.legend_location,
+        fontsize=style.legend_font_size,
+        markerscale=style.legend_marker_scale,
+        frameon=style.legend_frame_on,
     )
 
     plotted_path = save_figure(figure, output_path)
@@ -397,26 +403,47 @@ def _model_group_order(provider: str) -> int:
     return int(provider in OPEN_MODEL_PROVIDERS)
 
 
-def _balanced_log_limit(lower_log_values: pd.Series, upper_log_values: pd.Series) -> float:
+def _balanced_log_limit(
+    lower_log_values: pd.Series,
+    upper_log_values: pd.Series,
+    style: OrderShiftPlotStyle,
+) -> float:
     """Return a symmetric log-scale axis limit around an odds ratio of one."""
 
     min_log_value = float(lower_log_values.min())
     max_log_value = float(upper_log_values.max())
-    return max(abs(min_log_value), abs(max_log_value), BALANCED_LOG_LIMIT_FLOOR) * BALANCED_LOG_LIMIT_PADDING
+    return max(abs(min_log_value), abs(max_log_value), style.balanced_log_limit_floor) * style.balanced_log_limit_padding
 
 
-def _set_odds_ratio_ticks(axis: plt.Axes, odds_xlim: tuple[float, float]) -> None:
+def _odds_ratio_xlim(log_limit: float, style: OrderShiftPlotStyle) -> tuple[float, float]:
+    """Return odds-ratio x-limits, optionally linear-balanced around one."""
+
+    log_limits = (math.exp(-log_limit), math.exp(log_limit))
+    if style.odds_ratio_scale == "log":
+        return log_limits
+    linear_half_width = max(style.odds_ratio_null_value - log_limits[0], log_limits[1] - style.odds_ratio_null_value)
+    return (
+        style.odds_ratio_null_value - linear_half_width,
+        style.odds_ratio_null_value + linear_half_width,
+    )
+
+
+def _set_odds_ratio_ticks(
+    axis: plt.Axes,
+    odds_xlim: tuple[float, float],
+    style: OrderShiftPlotStyle,
+) -> None:
     """Place simple odds-ratio ticks while preserving a log-balanced axis."""
 
     lower, upper = odds_xlim
-    first_tick = math.ceil(lower / RIGHT_TICK_STEP) * RIGHT_TICK_STEP
+    first_tick = math.ceil(lower / style.right_tick_step) * style.right_tick_step
     tick_values: list[float] = []
     tick_value = first_tick
-    while tick_value <= upper + RIGHT_TICK_EPSILON:
+    while tick_value <= upper + style.right_tick_epsilon:
         tick_values.append(round(tick_value, 1))
-        tick_value += RIGHT_TICK_STEP
-    if ODDS_RATIO_NULL_VALUE not in tick_values:
-        tick_values.append(ODDS_RATIO_NULL_VALUE)
+        tick_value += style.right_tick_step
+    if style.odds_ratio_null_value not in tick_values:
+        tick_values.append(style.odds_ratio_null_value)
     tick_values = sorted(value for value in tick_values if lower <= value <= upper)
     axis.set_xticks(tick_values)
     axis.set_xticklabels([f"{value:g}" for value in tick_values])
@@ -425,6 +452,7 @@ def _set_odds_ratio_ticks(axis: plt.Axes, odds_xlim: tuple[float, float]) -> Non
 def _add_significance_markers(
     axis: plt.Axes,
     comparison: pd.DataFrame,
+    style: OrderShiftPlotStyle,
 ) -> None:
     """Annotate significant order-shift deltas on the right side of the odds-ratio panel."""
 
@@ -432,37 +460,38 @@ def _add_significance_markers(
         marker = _significance_marker(
             delta=float(row.severity_delta),
             standard_error=float(row.delta_se_independent),
+            style=style,
         )
         if not marker:
             continue
         axis.annotate(
             marker,
-            xy=(SIGNIFICANCE_MARKER_X, y_position),
+            xy=(style.significance_marker_x, y_position),
             xycoords=axis.get_yaxis_transform(),
-            xytext=(SIGNIFICANCE_MARKER_X_OFFSET_POINTS, SIGNIFICANCE_MARKER_Y_OFFSET_POINTS),
-            textcoords=SIGNIFICANCE_MARKER_TEXT_COORDS,
-            ha=SIGNIFICANCE_MARKER_HORIZONTAL_ALIGNMENT,
-            va=SIGNIFICANCE_MARKER_VERTICAL_ALIGNMENT,
-            fontsize=SIGNIFICANCE_MARKER_FONT_SIZE,
-            color=SIGNIFICANCE_MARKER_COLOR,
-            fontweight=SIGNIFICANCE_MARKER_WEIGHT,
-            clip_on=SIGNIFICANCE_MARKER_CLIP_ON,
-            zorder=SIGNIFICANCE_MARKER_ZORDER,
+            xytext=(style.significance_marker_x_offset_points, style.significance_marker_y_offset_points),
+            textcoords=style.significance_marker_text_coords,
+            ha=style.significance_marker_horizontal_alignment,
+            va=style.significance_marker_vertical_alignment,
+            fontsize=style.significance_marker_font_size,
+            color=style.significance_marker_color,
+            fontweight=style.significance_marker_weight,
+            clip_on=style.significance_marker_clip_on,
+            zorder=style.significance_marker_zorder,
         )
 
 
-def _significance_marker(delta: float, standard_error: float) -> str:
+def _significance_marker(delta: float, standard_error: float, style: OrderShiftPlotStyle) -> str:
     """Return a star marker from a two-sided normal approximation."""
 
     if standard_error <= 0:
         return ""
     p_value = math.erfc(abs(delta / standard_error) / math.sqrt(2.0))
-    if p_value < SIGNIFICANCE_P001_THRESHOLD:
-        return SIGNIFICANCE_P001_MARKER
-    if p_value < SIGNIFICANCE_P05_THRESHOLD:
-        return SIGNIFICANCE_P05_MARKER
-    if p_value < SIGNIFICANCE_P10_THRESHOLD:
-        return SIGNIFICANCE_P10_MARKER
+    if p_value < style.significance_p001_threshold:
+        return style.significance_p001_marker
+    if p_value < style.significance_p05_threshold:
+        return style.significance_p05_marker
+    if p_value < style.significance_p10_threshold:
+        return style.significance_p10_marker
     return ""
 
 
