@@ -1,0 +1,34 @@
+annotations:
+  original_paths:
+    - data/question_order_original_matched_processed.csv
+  reverse_paths:
+    - data/question_order_reverse_matched_processed.csv
+
+order:
+  original_label: original_order
+  reverse_label: reverse_order
+
+anchors:
+  comment_scores_path: facets/human_baseline/human_facets_scores.1.txt
+  item_scores_path: facets/human_baseline/human_facets_scores.3.txt
+
+output:
+  facets_run_dir: facets/question_order_pooled_effect
+  facets_data_filename: question_order_pooled_effect_data.tsv
+  facets_spec_filename: question_order_pooled_effect_spec.txt
+  facets_score_filename: question_order_pooled_effect_scores.txt
+  facets_output_filename: question_order_pooled_effect_output.txt
+
+facets:
+  title: MHS Reference Set Pooled Original/Reverse Order Effect
+  model: "?, ?, #, ?, R"
+  noncenter: 2
+  positive: 1
+  arrange: N
+  subset_detection: No
+  delements:
+    - 1N
+    - 2N
+    - 3N
+    - 4N
+  csv: Tab

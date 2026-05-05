@@ -1,0 +1,40 @@
+name: question_order_reverse_batch
+description: |
+  Reverse severity-item order run on the MHS reference set for providers with
+  native batch support.
+
+subset: reference_set
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1_reversed_severity_order.txt
+
+models:
+  - id: openai_gpt-5.4_medium
+    provider: openai
+    name: gpt-5.4
+    max_tokens: 2000
+    reasoning:
+      effort: medium
+
+  - id: google_gemini-3.1-pro-preview_medium
+    provider: google
+    name: gemini-3.1-pro-preview
+    max_tokens: 2048
+    reasoning:
+      effort: medium
+
+  - id: anthropic_claude-opus-4-6_medium
+    provider: anthropic
+    name: claude-opus-4-6
+    max_tokens: 2048
+    reasoning:
+      effort: medium
+
+  - id: xai_grok-4-1-fast-reasoning
+    provider: xai
+    name: grok-4-1-fast-reasoning
+    max_tokens: 2048
+
+batches:
+  run_dir: batches/question_order_reverse_batch
+  combined_output_path: data/question_order_reverse_batch_processed.csv

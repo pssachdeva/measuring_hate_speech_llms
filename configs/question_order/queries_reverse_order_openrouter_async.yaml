@@ -1,0 +1,39 @@
+name: question_order_reverse_openrouter
+description: |
+  Reverse severity-item order run on the MHS reference set for OpenRouter-hosted
+  large models.
+
+subset: reference_set
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1_reversed_severity_order.txt
+
+async:
+  max_attempts: 5
+  retry_delay_seconds: 2.0
+
+models:
+  - id: openrouter_deepseek_deepseek-v3.2
+    provider: openrouter
+    name: deepseek/deepseek-v3.2
+    max_tokens: 512
+    params:
+      temperature: 0.5
+
+  - id: openrouter_minimax_minimax-m2.5
+    provider: openrouter
+    name: minimax/minimax-m2.5
+    max_tokens: 4096
+    params:
+      temperature: 0.5
+
+  - id: openrouter_moonshotai_kimi-k2.5
+    provider: openrouter
+    name: moonshotai/kimi-k2.5
+    max_tokens: 4096
+    params:
+      temperature: 0.5
+
+batches:
+  run_dir: batches/question_order_reverse_openrouter
+  combined_output_path: data/question_order_reverse_openrouter_processed.csv

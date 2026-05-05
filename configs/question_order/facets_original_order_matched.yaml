@@ -1,0 +1,27 @@
+annotations:
+  paths:
+    - data/question_order_original_matched_processed.csv
+
+anchors:
+  comment_scores_path: facets/human_baseline/human_facets_scores.1.txt
+  item_scores_path: facets/human_baseline/human_facets_scores.3.txt
+
+output:
+  facets_run_dir: facets/question_order_original_matched
+  facets_data_filename: question_order_original_matched_data.tsv
+  facets_spec_filename: question_order_original_matched_spec.txt
+  facets_score_filename: question_order_original_matched_scores.txt
+  facets_output_filename: question_order_original_matched_output.txt
+
+facets:
+  title: MHS Reference Set Original-Order Matched Models Anchored To Human Baseline
+  model: "?, ?, #, R"
+  noncenter: 2
+  positive: 1
+  arrange: N
+  subset_detection: No
+  delements:
+    - 1N
+    - 2N
+    - 3N
+  csv: Tab
