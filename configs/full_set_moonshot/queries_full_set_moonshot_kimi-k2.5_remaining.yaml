@@ -1,0 +1,25 @@
+name: full_set_moonshot_kimi-k2.5_remaining
+description: |
+  Moonshot/Kimi direct Batch API run for Kimi K2.5 on comments without a
+  successful Kimi processed row after the 50-comment smoke test.
+
+subset:
+  type: comment_ids_file
+  path: data/full_set_moonshot_kimi-k2.5_remaining_comment_ids.csv
+  column: comment_id
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+model:
+  id: moonshot_kimi-k2.5
+  provider: moonshot
+  name: kimi-k2.5
+  max_tokens: 8192
+  params:
+    thinking:
+      type: enabled
+
+batches:
+  run_dir: batches/full_set_moonshot_kimi-k2.5_remaining
+  combined_output_path: data/full_set_moonshot_kimi-k2.5_remaining_processed.csv

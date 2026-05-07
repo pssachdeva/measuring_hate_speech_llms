@@ -1,0 +1,24 @@
+name: full_set_together_kimi-k2.5
+description: |
+  Together Batch API single-model test run for Kimi K2.5 on MHS comments with
+  4+ human annotators.
+
+subset:
+  type: annotator_count_threshold
+  min: 4
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+model:
+  id: together_moonshotai_kimi-k2.5
+  provider: together
+  name: moonshotai/Kimi-K2.5
+  max_tokens: 4096
+  params:
+    reasoning:
+      enabled: true
+
+batches:
+  run_dir: batches/full_set_together_kimi-k2.5
+  combined_output_path: data/full_set_together_kimi-k2.5_processed.csv

@@ -1,0 +1,23 @@
+name: full_set_together_llama-3.3-70b
+description: |
+  Together Batch API single-model test run for Llama 3.3 70B on MHS comments
+  with 4+ human annotators.
+
+subset:
+  type: annotator_count_threshold
+  min: 4
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+model:
+  id: together_meta-llama_llama-3.3-70b-instruct-turbo
+  provider: together
+  name: meta-llama/Llama-3.3-70B-Instruct-Turbo
+  max_tokens: 4096
+  params:
+    temperature: 0.5
+
+batches:
+  run_dir: batches/full_set_together_llama-3.3-70b
+  combined_output_path: data/full_set_together_llama-3.3-70b_processed.csv
