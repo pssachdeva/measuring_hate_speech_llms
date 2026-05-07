@@ -1,4 +1,5 @@
 from mhs_llms.retry_direct import (
+    _parse_together_streaming_lines,
     _merge_processed_rows,
     _merge_processing_errors,
     _merge_raw_results,
@@ -100,3 +101,17 @@ def test_merge_processing_errors_keeps_only_unresolved_retry_failures() -> None:
     )
 
     assert remaining_rows == retry_errors
+
+
+def test_parse_together_streaming_lines_combines_delta_content() -> None:
+    provider_response, response_text = _parse_together_streaming_lines(
+        [
+            b'data: {"choices":[{"delta":{"content":"{\\"target_groups\\":"}}]}\n',
+            b'data: {"choices":[{"delta":{"content":" [\\"I\\"]}"}}]}\n',
+            b"data: [DONE]\n",
+        ]
+    )
+
+    assert response_text == '{"target_groups": ["I"]}'
+    assert provider_response["stream"] is True
+    assert provider_response["choices"][0]["message"]["content"] == response_text

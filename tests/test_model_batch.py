@@ -16,7 +16,9 @@ from mhs_llms.batch import (
 from mhs_llms.batch import (
     _extract_anthropic_result,
     _extract_google_result,
+    _extract_moonshot_result,
     _extract_openai_result,
+    _extract_together_result,
     _extract_xai_result,
     _batch_status,
     _build_processing_error_record,
@@ -99,6 +101,74 @@ def test_provider_api_key_reads_xai_env_var(monkeypatch) -> None:
     monkeypatch.setenv("XAI_API_KEY", "test-xai-key")
 
     assert _provider_api_key(config) == "test-xai-key"
+
+
+def test_provider_api_key_reads_together_env_var(monkeypatch) -> None:
+    config = ModelBatchConfig(
+        name="test-together",
+        subset="reference_set",
+        limit=1,
+        prompt=BatchPromptConfig(
+            system_prompt_path=Path("prompts/mhs_survey_v1.txt"),
+            user_prompt_template="",
+        ),
+        model=BatchModelConfig(
+            provider="together",
+            name="openai/gpt-oss-120b",
+            id="together_openai_gpt-oss-120b",
+            max_tokens=256,
+            params={},
+            reasoning=BatchReasoningConfig(),
+        ),
+        batches=BatchStorageConfig(
+            run_dir=Path("batches/test-together"),
+            request_manifest_filename="request_manifest.jsonl",
+            provider_requests_filename="provider_requests.jsonl",
+            batch_metadata_filename="batch_job.json",
+            raw_results_filename="raw_results.jsonl",
+            processed_records_filename="processed_records.jsonl",
+            processed_csv_filename="processed_records.csv",
+            errors_filename="processing_errors.jsonl",
+        ),
+    )
+
+    monkeypatch.setenv("TOGETHER_API_KEY", "test-together-key")
+
+    assert _provider_api_key(config) == "test-together-key"
+
+
+def test_provider_api_key_reads_moonshot_env_var(monkeypatch) -> None:
+    config = ModelBatchConfig(
+        name="test-moonshot",
+        subset="reference_set",
+        limit=1,
+        prompt=BatchPromptConfig(
+            system_prompt_path=Path("prompts/mhs_survey_v1.txt"),
+            user_prompt_template="",
+        ),
+        model=BatchModelConfig(
+            provider="moonshot",
+            name="kimi-k2.5",
+            id="moonshot_kimi-k2.5",
+            max_tokens=256,
+            params={},
+            reasoning=BatchReasoningConfig(),
+        ),
+        batches=BatchStorageConfig(
+            run_dir=Path("batches/test-moonshot"),
+            request_manifest_filename="request_manifest.jsonl",
+            provider_requests_filename="provider_requests.jsonl",
+            batch_metadata_filename="batch_job.json",
+            raw_results_filename="raw_results.jsonl",
+            processed_records_filename="processed_records.jsonl",
+            processed_csv_filename="processed_records.csv",
+            errors_filename="processing_errors.jsonl",
+        ),
+    )
+
+    monkeypatch.setenv("MOONSHOT_API_KEY", "test-moonshot-key")
+
+    assert _provider_api_key(config) == "test-moonshot-key"
 
 
 def test_extract_openai_result_reads_message_text() -> None:
@@ -270,6 +340,69 @@ def test_extract_xai_result_reads_chat_completion_result() -> None:
     custom_id, response_text, _, response_error = _extract_xai_result(entry)
 
     assert custom_id == "comment-5"
+    assert response_error is None
+    assert '"hate_speech":"B"' in response_text
+
+
+def test_extract_together_result_reads_message_text() -> None:
+    entry = {
+        "custom_id": "comment-6",
+        "response": {
+            "status_code": 200,
+            "body": {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"target_groups":["I"],"sentiment":"C","respect":"C","insult":"A","humiliate":"A","status":"C","dehumanize":"A","violence":"A","genocide":"A","attack_defend":"C","hate_speech":"B"}'
+                        }
+                    }
+                ]
+            },
+        },
+    }
+
+    custom_id, response_text, _, response_error = _extract_together_result(entry)
+
+    assert custom_id == "comment-6"
+    assert response_error is None
+    assert '"hate_speech":"B"' in response_text
+
+
+def test_extract_together_result_reads_error_file_row() -> None:
+    entry = {
+        "custom_id": "comment-7",
+        "error": {"message": "Invalid model specified", "code": "invalid_model"},
+    }
+
+    custom_id, response_text, response_metadata, response_error = _extract_together_result(entry)
+
+    assert custom_id == "comment-7"
+    assert response_text == ""
+    assert response_metadata["error"]["code"] == "invalid_model"
+    assert "invalid_model" in response_error
+
+
+def test_extract_moonshot_result_reads_message_text() -> None:
+    entry = {
+        "custom_id": "comment-8",
+        "response": {
+            "status_code": 0,
+            "body": {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"target_groups":["I"],"sentiment":"C","respect":"C","insult":"A","humiliate":"A","status":"C","dehumanize":"A","violence":"A","genocide":"A","attack_defend":"C","hate_speech":"B"}'
+                        }
+                    }
+                ]
+            },
+        },
+        "error": None,
+    }
+
+    custom_id, response_text, _, response_error = _extract_moonshot_result(entry)
+
+    assert custom_id == "comment-8"
     assert response_error is None
     assert '"hate_speech":"B"' in response_text
 
@@ -492,6 +625,98 @@ def test_build_requests_for_xai_follow_native_batch_shape() -> None:
     assert chat_request["reasoning_effort"] == "low"
 
 
+def test_build_requests_for_together_follow_batch_api_shape() -> None:
+    config = ModelBatchConfig(
+        name="test-together",
+        subset="reference_set",
+        limit=1,
+        prompt=BatchPromptConfig(
+            system_prompt_path=Path("prompts/mhs_survey_v1.txt"),
+            user_prompt_template="",
+        ),
+        model=BatchModelConfig(
+            provider="together",
+            name="openai/gpt-oss-120b",
+            id="together_openai_gpt-oss-120b",
+            max_tokens=4096,
+            params={"temperature": 0.5},
+            reasoning=BatchReasoningConfig(),
+        ),
+        batches=BatchStorageConfig(
+            run_dir=Path("batches/test-together"),
+            request_manifest_filename="request_manifest.jsonl",
+            provider_requests_filename="provider_requests.jsonl",
+            batch_metadata_filename="batch_job.json",
+            raw_results_filename="raw_results.jsonl",
+            processed_records_filename="processed_records.jsonl",
+            processed_csv_filename="processed_records.csv",
+            errors_filename="processing_errors.jsonl",
+        ),
+    )
+
+    _, provider_requests = _build_requests(
+        config=config,
+        comments=[{"comment_id": 1, "text": "just the comment"}],
+    )
+
+    assert provider_requests[0]["custom_id"] == "comment-1"
+    body = provider_requests[0]["body"]
+    assert body["model"] == "openai/gpt-oss-120b"
+    assert body["messages"][1]["content"] == "just the comment"
+    assert body["max_tokens"] == 4096
+    assert body["temperature"] == 0.5
+
+
+def test_build_requests_for_moonshot_use_openai_batch_shape_with_thinking() -> None:
+    config = ModelBatchConfig(
+        name="test-moonshot",
+        subset="reference_set",
+        limit=1,
+        prompt=BatchPromptConfig(
+            system_prompt_path=Path("prompts/mhs_survey_v1.txt"),
+            user_prompt_template="",
+        ),
+        model=BatchModelConfig(
+            provider="moonshot",
+            name="kimi-k2.5",
+            id="moonshot_kimi-k2.5",
+            max_tokens=4096,
+            params={"thinking": {"type": "enabled"}},
+            reasoning=BatchReasoningConfig(),
+        ),
+        batches=BatchStorageConfig(
+            run_dir=Path("batches/test-moonshot"),
+            request_manifest_filename="request_manifest.jsonl",
+            provider_requests_filename="provider_requests.jsonl",
+            batch_metadata_filename="batch_job.json",
+            raw_results_filename="raw_results.jsonl",
+            processed_records_filename="processed_records.jsonl",
+            processed_csv_filename="processed_records.csv",
+            errors_filename="processing_errors.jsonl",
+        ),
+    )
+
+    _, provider_requests = _build_requests(
+        config=config,
+        comments=[{"comment_id": 1, "text": "just the comment"}],
+    )
+
+    assert provider_requests[0] == {
+        "custom_id": "comment-1",
+        "method": "POST",
+        "url": "/v1/chat/completions",
+        "body": {
+            "model": "kimi-k2.5",
+            "messages": [
+                {"role": "system", "content": Path("prompts/mhs_survey_v1.txt").read_text()},
+                {"role": "user", "content": "just the comment"},
+            ],
+            "thinking": {"type": "enabled"},
+            "max_tokens": 4096,
+        },
+    }
+
+
 def test_apply_google_batch_reasoning_maps_effort_to_thinking_level() -> None:
     payload = _apply_google_batch_reasoning(
         generation_config={"max_output_tokens": 80},
@@ -670,6 +895,77 @@ def test_create_xai_batch_creates_batch_and_adds_requests(tmp_path: Path, monkey
             {"batch_requests": [{"batch_request_id": "comment-1", "batch_request": {"chat_get_completion": {}}}]},
         ),
         ("GET", "/v1/batches/batch-xai-123", None),
+    ]
+
+
+def test_create_together_batch_uploads_file_and_creates_job(tmp_path: Path, monkeypatch) -> None:
+    provider_requests_path = tmp_path / "provider_requests.jsonl"
+    provider_requests_path.write_text(json.dumps({"custom_id": "comment-1", "body": {}}) + "\n")
+
+    config = ModelBatchConfig(
+        name="test-together",
+        subset="reference_set",
+        limit=1,
+        prompt=BatchPromptConfig(
+            system_prompt_path=Path("prompts/mhs_survey_v1.txt"),
+            user_prompt_template="",
+        ),
+        model=BatchModelConfig(
+            provider="together",
+            name="openai/gpt-oss-120b",
+            id="together_openai_gpt-oss-120b",
+            max_tokens=256,
+            params={},
+            reasoning=BatchReasoningConfig(),
+        ),
+        batches=BatchStorageConfig(
+            run_dir=tmp_path / "batches",
+            request_manifest_filename="request_manifest.jsonl",
+            provider_requests_filename="provider_requests.jsonl",
+            batch_metadata_filename="batch_job.json",
+            raw_results_filename="raw_results.jsonl",
+            processed_records_filename="processed_records.jsonl",
+            processed_csv_filename="processed_records.csv",
+            errors_filename="processing_errors.jsonl",
+        ),
+    )
+
+    calls: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def fake_together_upload_file(config, path):
+        assert path == provider_requests_path
+        return {"id": "file-together-123"}
+
+    def fake_together_api_request(config, method, path, payload=None, query=None):
+        calls.append((method, path, payload))
+        return {
+            "job": {
+                "id": "batch-together-123",
+                "status": "VALIDATING",
+                "input_file_id": "file-together-123",
+            }
+        }
+
+    monkeypatch.setattr("mhs_llms.batch._together_upload_file", fake_together_upload_file)
+    monkeypatch.setattr("mhs_llms.batch._together_api_request", fake_together_api_request)
+
+    batch = _create_provider_batch(
+        config=config,
+        provider_requests_path=provider_requests_path,
+        provider_requests=[{"custom_id": "comment-1", "body": {}}],
+    )
+
+    assert batch["id"] == "batch-together-123"
+    assert calls == [
+        (
+            "POST",
+            "/batches",
+            {
+                "input_file_id": "file-together-123",
+                "endpoint": "/v1/chat/completions",
+                "completion_window": "24h",
+            },
+        )
     ]
 
 
@@ -902,6 +1198,76 @@ def test_download_provider_results_reads_paginated_xai_results(monkeypatch, tmp_
     ]
 
 
+def test_download_provider_results_reads_together_output_and_error_files(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = ModelBatchConfig(
+        name="test-together",
+        subset="reference_set",
+        limit=1,
+        prompt=BatchPromptConfig(
+            system_prompt_path=Path("prompts/mhs_survey_v1.txt"),
+            user_prompt_template="",
+        ),
+        model=BatchModelConfig(
+            provider="together",
+            name="openai/gpt-oss-120b",
+            id="together_openai_gpt-oss-120b",
+            max_tokens=256,
+            params={},
+            reasoning=BatchReasoningConfig(),
+        ),
+        batches=BatchStorageConfig(
+            run_dir=tmp_path / "batches",
+            request_manifest_filename="request_manifest.jsonl",
+            provider_requests_filename="provider_requests.jsonl",
+            batch_metadata_filename="batch_job.json",
+            raw_results_filename="raw_results.jsonl",
+            processed_records_filename="processed_records.jsonl",
+            processed_csv_filename="processed_records.csv",
+            errors_filename="processing_errors.jsonl",
+        ),
+    )
+
+    def fake_together_download_file(config, file_id):
+        if file_id == "file-output":
+            return (
+                json.dumps(
+                    {
+                        "custom_id": "comment-1",
+                        "response": {"status_code": 200, "body": {"choices": []}},
+                    }
+                )
+                + "\n"
+            ).encode("utf-8")
+        if file_id == "file-error":
+            return (
+                json.dumps(
+                    {
+                        "custom_id": "comment-2",
+                        "error": {"message": "timeout", "code": "timeout"},
+                    }
+                )
+                + "\n"
+            ).encode("utf-8")
+        raise AssertionError(f"Unexpected file_id: {file_id}")
+
+    monkeypatch.setattr("mhs_llms.batch._together_download_file", fake_together_download_file)
+
+    rows = _download_provider_results(
+        config=config,
+        batch_object={
+            "id": "batch-together-123",
+            "status": "COMPLETED",
+            "output_file_id": "file-output",
+            "error_file_id": "file-error",
+        },
+    )
+
+    assert [row["custom_id"] for row in rows] == ["comment-1", "comment-2"]
+    assert rows[1]["error"]["code"] == "timeout"
+
+
 def test_batch_status_prefers_google_state_name() -> None:
     class DummyState:
         name = "BATCH_STATE_SUCCEEDED"
@@ -926,6 +1292,10 @@ def test_batch_status_maps_xai_state_counters() -> None:
         "xai",
         {"state": {"num_pending": 0, "num_error": 2, "num_cancelled": 0}},
     ) == "completed_with_errors"
+
+
+def test_batch_status_reads_together_status() -> None:
+    assert _batch_status("together", {"id": "batch-together-123", "status": "COMPLETED"}) == "COMPLETED"
 
 
 def test_select_comment_ids_reference_set_is_in_code_and_sorted() -> None:

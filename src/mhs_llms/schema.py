@@ -165,8 +165,6 @@ class MHSAnnotationRecord:
         invalid_target_groups = [group for group in self.target_groups if group not in TARGET_GROUP_CODES]
         if invalid_target_groups:
             raise ValueError(f"target_groups contains invalid codes: {invalid_target_groups}")
-        if "I" in self.target_groups and len(self.target_groups) > 1:
-            raise ValueError("target_groups cannot combine 'I' with other codes")
         for item_name in ITEM_NAMES:
             value = getattr(self, item_name)
             if value not in ITEM_RESPONSE_LETTERS[item_name]:

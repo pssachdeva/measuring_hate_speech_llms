@@ -3,14 +3,17 @@
 from dataclasses import dataclass, replace
 import json
 from pathlib import Path
+import subprocess
 from typing import Any, Sequence
 
 from anthropic import Anthropic
 from google import genai
+from loguru import logger
 from openai import OpenAI
 import pandas as pd
 
 from mhs_llms.batch import (
+    TOGETHER_API_BASE_URL,
     _apply_anthropic_request_reasoning,
     _build_processing_error_record,
     _coerce_anthropic_content_to_text,
@@ -175,7 +178,8 @@ def _retry_errored_for_config(
     processed_rows: list[dict[str, Any]] = []
     processing_errors: list[dict[str, Any]] = []
 
-    for manifest_row in retry_manifest_rows:
+    total_retries = len(retry_manifest_rows)
+    for retry_index, manifest_row in enumerate(retry_manifest_rows, start=1):
         custom_id = str(manifest_row["custom_id"])
         comment_id = int(manifest_row["comment_id"])
         comment_text = str(manifest_row["text"])
@@ -184,6 +188,13 @@ def _retry_errored_for_config(
             config=retry_config,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
+        )
+        logger.info(
+            "Direct retry {}/{} for {} ({})",
+            retry_index,
+            total_retries,
+            custom_id,
+            retry_config.model.provider,
         )
 
         try:
@@ -478,6 +489,24 @@ def _build_direct_provider_request(
         payload.update(config.model.params)
         return payload
 
+    if provider == "together":
+        if config.model.reasoning.effort is not None or config.model.reasoning.budget_tokens is not None:
+            raise ValueError(
+                "Together direct retries do not support the shared reasoning config fields; "
+                "pass provider-specific controls through model params if needed"
+            )
+        payload = {
+            "model": config.model.name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        if config.model.max_tokens is not None:
+            payload["max_tokens"] = config.model.max_tokens
+        payload.update(config.model.params)
+        return payload
+
     raise ValueError(f"Unsupported provider for direct retry: {provider}")
 
 
@@ -519,7 +548,84 @@ def _execute_direct_request(
         )
         return payload, _coerce_openai_content_to_text(payload["choices"][0]["message"]["content"])
 
+    if provider == "together":
+        return _execute_together_streaming_request(config=config, request_payload=request_payload)
+
     raise ValueError(f"Unsupported provider for direct retry: {provider}")
+
+
+def _execute_together_streaming_request(
+    config: ModelBatchConfig,
+    request_payload: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    """Execute one Together chat completion with streaming enabled and collect the text."""
+
+    payload = dict(request_payload)
+    payload["stream"] = True
+    process = subprocess.Popen(
+        [
+            "curl",
+            "--no-buffer",
+            "--silent",
+            "--show-error",
+            "--fail-with-body",
+            "-X",
+            "POST",
+            f"{TOGETHER_API_BASE_URL}/chat/completions",
+            "-H",
+            f"Authorization: Bearer {_provider_api_key(config)}",
+            "-H",
+            "Accept: text/event-stream",
+            "-H",
+            "Content-Type: application/json",
+            "--data-binary",
+            json.dumps(payload),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if process.stdout is None or process.stderr is None:
+        raise ValueError("Could not open curl pipes for Together streaming request")
+
+    provider_response, response_text = _parse_together_streaming_lines(process.stdout)
+    stderr_text = process.stderr.read().decode("utf-8", errors="replace")
+    returncode = process.wait()
+    if returncode != 0:
+        raise ValueError(
+            "Together streaming request failed "
+            f"(exit={returncode}): {stderr_text}{response_text}"
+        )
+    return provider_response, response_text
+
+
+def _parse_together_streaming_lines(lines: Any) -> tuple[dict[str, Any], str]:
+    """Parse OpenAI-compatible Together SSE chunks into provider metadata and text."""
+
+    events: list[dict[str, Any]] = []
+    text_chunks: list[str] = []
+    for raw_line in lines:
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line or line.startswith(":") or not line.startswith("data:"):
+            continue
+        data = line[len("data:") :].strip()
+        if data == "[DONE]":
+            break
+        event = json.loads(data)
+        events.append(event)
+        choices = event.get("choices", [])
+        if not choices:
+            continue
+        delta = choices[0].get("delta", {})
+        content = delta.get("content")
+        if content:
+            text_chunks.append(str(content))
+
+    response_text = "".join(text_chunks)
+    return {
+        "stream": True,
+        "events": events,
+        "choices": [{"message": {"content": response_text}}],
+    }, response_text
 
 
 def _select_retry_manifest_rows(

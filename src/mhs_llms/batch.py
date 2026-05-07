@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import subprocess
 from typing import Any, Callable, Iterable
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
@@ -37,6 +38,8 @@ TERMINAL_BATCH_STATUSES = {
         "BATCH_STATE_EXPIRED",
     },
     "xai": {"completed", "completed_with_errors"},
+    "together": {"COMPLETED", "FAILED", "EXPIRED", "CANCELLED"},
+    "moonshot": {"completed", "failed", "expired", "cancelled"},
 }
 
 SUCCESSFUL_RESULT_STATUSES = {
@@ -48,6 +51,8 @@ SUCCESSFUL_RESULT_STATUSES = {
         "BATCH_STATE_SUCCEEDED",
     },
     "xai": {"completed", "completed_with_errors"},
+    "together": {"COMPLETED"},
+    "moonshot": {"completed"},
 }
 
 PROVIDER_API_ENV_VARS = {
@@ -56,9 +61,13 @@ PROVIDER_API_ENV_VARS = {
     "google": "GEMINI_API_KEY",
     "xai": "XAI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
+    "together": "TOGETHER_API_KEY",
+    "moonshot": "MOONSHOT_API_KEY",
 }
 
 XAI_API_BASE_URL = "https://api.x.ai"
+TOGETHER_API_BASE_URL = "https://api.together.xyz/v1"
+MOONSHOT_API_BASE_URL = "https://api.moonshot.ai/v1"
 
 
 @dataclass(frozen=True)
@@ -652,6 +661,48 @@ def _provider_request(
                 "chat_get_completion": body,
             },
         }
+    if provider_name == "together":
+        if reasoning_effort is not None or reasoning_budget_tokens is not None:
+            raise ValueError(
+                "Together batch requests do not support the shared reasoning config fields; "
+                "pass provider-specific controls through model params if needed"
+            )
+        body = {
+            **model_params,
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+        return {
+            "custom_id": custom_id,
+            "body": body,
+        }
+    if provider_name == "moonshot":
+        if reasoning_effort is not None or reasoning_budget_tokens is not None:
+            raise ValueError(
+                "Moonshot Kimi batch requests support thinking only as a provider-specific "
+                "model param, e.g. params.thinking.type=enabled"
+            )
+        body = {
+            **model_params,
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+        return {
+            "custom_id": custom_id,
+            "method": "POST",
+            "url": "/v1/chat/completions",
+            "body": body,
+        }
     raise ValueError(f"Unsupported provider: {provider_name}")
 
 
@@ -705,6 +756,28 @@ def _create_provider_batch(
             method="GET",
             path=f"/v1/batches/{batch['batch_id']}",
         )
+    if config.model.provider == "together":
+        input_file = _together_upload_file(config=config, path=provider_requests_path)
+        batch = _together_api_request(
+            config=config,
+            method="POST",
+            path="/batches",
+            payload={
+                "input_file_id": input_file["id"],
+                "endpoint": "/v1/chat/completions",
+                "completion_window": "24h",
+            },
+        )
+        return _unwrap_together_batch(batch)
+    if config.model.provider == "moonshot":
+        client = _moonshot_client(config)
+        with provider_requests_path.open("rb") as handle:
+            input_file = client.files.create(file=handle, purpose="batch")
+        return client.batches.create(
+            input_file_id=input_file.id,
+            endpoint="/v1/chat/completions",
+            completion_window="24h",
+        )
     raise ValueError(f"Unsupported provider: {config.model.provider}")
 
 
@@ -732,6 +805,14 @@ def _retrieve_provider_batch(config: ModelBatchConfig, batch_id: str) -> Any:
             method="GET",
             path=f"/v1/batches/{batch_id}",
         )
+    if config.model.provider == "together":
+        return _together_api_request(
+            config=config,
+            method="GET",
+            path=f"/batches/{batch_id}",
+        )
+    if config.model.provider == "moonshot":
+        return _moonshot_client(config).batches.retrieve(batch_id)
     raise ValueError(f"Unsupported provider: {config.model.provider}")
 
 
@@ -807,6 +888,31 @@ def _download_provider_results(config: ModelBatchConfig, batch_object: Any) -> l
                 break
         return results
 
+    if config.model.provider == "together":
+        results = []
+        output_file_id = _get_together_batch_field(batch_object, "output_file_id")
+        if output_file_id:
+            results.extend(_download_together_jsonl(config=config, file_id=output_file_id))
+        error_file_id = _get_together_batch_field(batch_object, "error_file_id")
+        if error_file_id:
+            results.extend(_download_together_jsonl(config=config, file_id=error_file_id))
+        if not results:
+            raise ValueError("Together batch completed without output_file_id or error_file_id results")
+        return results
+
+    if config.model.provider == "moonshot":
+        client = _moonshot_client(config)
+        results = []
+        output_file_id = getattr(batch_object, "output_file_id", None)
+        if output_file_id:
+            results.extend(_download_openai_compatible_jsonl(client=client, file_id=str(output_file_id)))
+        error_file_id = getattr(batch_object, "error_file_id", None)
+        if error_file_id:
+            results.extend(_download_openai_compatible_jsonl(client=client, file_id=str(error_file_id)))
+        if not results:
+            raise ValueError("Moonshot batch completed without output_file_id or error_file_id results")
+        return results
+
     raise ValueError(f"Unsupported provider: {config.model.provider}")
 
 
@@ -823,6 +929,10 @@ def _result_extractor(
         return _extract_google_result
     if provider_name == "xai":
         return _extract_xai_result
+    if provider_name == "together":
+        return _extract_together_result
+    if provider_name == "moonshot":
+        return _extract_moonshot_result
     raise ValueError(f"Unsupported provider: {provider_name}")
 
 
@@ -924,6 +1034,54 @@ def _extract_xai_result(
     return custom_id, _coerce_openai_content_to_text(message.get("content")), completion, None
 
 
+def _extract_together_result(
+    entry: dict[str, Any],
+) -> tuple[str, str, dict[str, Any], str | None]:
+    """Extract text content and status metadata from one Together batch result."""
+
+    custom_id = str(entry.get("custom_id", ""))
+    error = entry.get("error")
+    if error is not None:
+        return custom_id, "", {"error": error}, json.dumps(error, sort_keys=True)
+
+    response = entry.get("response", {})
+    status_code = int(response.get("status_code", 0))
+    body = response.get("body", {})
+    if status_code != 200:
+        return custom_id, "", body, f"Together request failed with status_code={status_code}"
+
+    choices = body.get("choices", [])
+    if not choices:
+        return custom_id, "", body, "Together response did not include any choices"
+
+    message = choices[0].get("message", {})
+    return custom_id, _coerce_openai_content_to_text(message.get("content")), body, None
+
+
+def _extract_moonshot_result(
+    entry: dict[str, Any],
+) -> tuple[str, str, dict[str, Any], str | None]:
+    """Extract text content and status metadata from one Moonshot/Kimi batch result."""
+
+    custom_id = str(entry.get("custom_id", ""))
+    error = entry.get("error")
+    if error is not None:
+        return custom_id, "", {"error": error}, json.dumps(error, sort_keys=True)
+
+    response = entry.get("response", {})
+    status_code = int(response.get("status_code", 0))
+    body = response.get("body", {})
+    if status_code not in {0, 200}:
+        return custom_id, "", body, f"Moonshot request failed with status_code={status_code}"
+
+    choices = body.get("choices", [])
+    if not choices:
+        return custom_id, "", body, "Moonshot response did not include any choices"
+
+    message = choices[0].get("message", {})
+    return custom_id, _coerce_openai_content_to_text(message.get("content")), body, None
+
+
 def _coerce_openai_content_to_text(content: Any) -> str:
     """Convert OpenAI content payloads into a single text string."""
 
@@ -978,6 +1136,10 @@ def _result_entry_custom_id(provider_name: str, entry: dict[str, Any]) -> str:
         )
     if provider_name == "xai":
         return str(entry.get("batch_request_id", ""))
+    if provider_name == "together":
+        return str(entry.get("custom_id", ""))
+    if provider_name == "moonshot":
+        return str(entry.get("custom_id", ""))
     return str(entry.get("custom_id", ""))
 
 
@@ -1310,6 +1472,29 @@ def _download_google_batch_output(file_name: str, api_key: str) -> bytes:
         return response.read()
 
 
+def _download_together_jsonl(config: ModelBatchConfig, file_id: str) -> list[dict[str, Any]]:
+    """Download one Together JSONL result file and decode every non-empty row."""
+
+    raw_bytes = _together_download_file(config=config, file_id=file_id)
+    return [json.loads(line) for line in raw_bytes.decode("utf-8").splitlines() if line.strip()]
+
+
+def _download_openai_compatible_jsonl(client: OpenAI, file_id: str) -> list[dict[str, Any]]:
+    """Download one OpenAI-compatible JSONL result file and decode non-empty rows."""
+
+    raw_text = client.files.content(file_id).text
+    return [json.loads(line) for line in raw_text.splitlines() if line.strip()]
+
+
+def _moonshot_client(config: ModelBatchConfig) -> OpenAI:
+    """Create an OpenAI SDK client pointed at Moonshot's Kimi API."""
+
+    return OpenAI(
+        api_key=_provider_api_key(config),
+        base_url=os.environ.get("MOONSHOT_BASE_URL", MOONSHOT_API_BASE_URL),
+    )
+
+
 def _provider_api_key(config: ModelBatchConfig) -> str:
     """Read the provider API key from the configured environment variable."""
 
@@ -1358,6 +1543,128 @@ def _xai_api_request(
         raise ValueError(f"xAI API request failed ({exc.code} {method} {path}): {response_text}") from exc
 
 
+def _together_api_request(
+    config: ModelBatchConfig,
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None = None,
+    query: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Issue one JSON request to the Together REST API and decode the response body."""
+
+    url = f"{TOGETHER_API_BASE_URL}{path}"
+    normalized_query = {
+        key: value
+        for key, value in (query or {}).items()
+        if value is not None
+    }
+    if normalized_query:
+        url = f"{url}?{urllib_parse.urlencode(normalized_query)}"
+
+    curl_args = [
+        "-X",
+        method,
+        url,
+        "-H",
+        f"Authorization: Bearer {_provider_api_key(config)}",
+        "-H",
+        "Accept: application/json",
+    ]
+    if payload is not None:
+        curl_args.extend(
+            [
+                "-H",
+                "Content-Type: application/json",
+                "--data-binary",
+                json.dumps(payload),
+            ]
+        )
+
+    raw_bytes = _run_together_curl(curl_args)
+    return json.loads(raw_bytes.decode("utf-8"))
+
+
+def _together_upload_file(config: ModelBatchConfig, path: Path) -> dict[str, Any]:
+    """Upload one JSONL request file to Together with purpose=batch-api."""
+
+    raw_bytes = _run_together_curl(
+        [
+            "-X",
+            "POST",
+            f"{TOGETHER_API_BASE_URL}/files/upload",
+            "-H",
+            f"Authorization: Bearer {_provider_api_key(config)}",
+            "-H",
+            "Accept: application/json",
+            "-F",
+            "purpose=batch-api",
+            "-F",
+            f"file_name={path.name}",
+            "-F",
+            "file_type=jsonl",
+            "-F",
+            f"file=@{path}",
+        ]
+    )
+    return json.loads(raw_bytes.decode("utf-8"))
+
+
+def _together_download_file(config: ModelBatchConfig, file_id: str) -> bytes:
+    """Download raw file bytes from Together's files content endpoint."""
+
+    return _run_together_curl(
+        [
+            "-X",
+            "GET",
+            f"{TOGETHER_API_BASE_URL}/files/{urllib_parse.quote(file_id, safe='')}/content",
+            "-H",
+            f"Authorization: Bearer {_provider_api_key(config)}",
+            "-H",
+            "Accept: application/jsonl, application/json",
+        ]
+    )
+
+
+def _run_together_curl(args: list[str]) -> bytes:
+    """Run one Together API request through curl to avoid provider-side urllib blocking."""
+
+    result = subprocess.run(
+        ["curl", "--fail-with-body", "--silent", "--show-error", *args],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        response_text = result.stdout.decode("utf-8", errors="replace")
+        stderr_text = result.stderr.decode("utf-8", errors="replace")
+        raise ValueError(
+            "Together curl request failed "
+            f"(exit={result.returncode}): {stderr_text}{response_text}"
+        )
+    return result.stdout
+
+
+def _unwrap_together_batch(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Together create responses that wrap the batch object under job."""
+
+    job = payload.get("job")
+    if isinstance(job, dict):
+        return job
+    return payload
+
+
+def _get_together_batch_field(batch_object: Any, field_name: str) -> str | None:
+    """Read a field from a Together batch object represented as a dict or SDK object."""
+
+    if isinstance(batch_object, dict):
+        value = batch_object.get(field_name)
+    else:
+        value = getattr(batch_object, field_name, None)
+    if value is None:
+        return None
+    return str(value)
+
+
 def _judge_id(config: ModelBatchConfig) -> str:
     """Return the identifier used for processed model rows."""
 
@@ -1379,13 +1686,18 @@ def _batch_identifier(provider_name: str, batch_object: Any) -> str:
         return str(batch_object.name)
     if provider_name == "xai":
         return str(batch_object["batch_id"])
+    if provider_name == "together":
+        batch_id = _get_together_batch_field(batch_object, "id")
+        if batch_id is None:
+            raise ValueError("Together batch object did not include id")
+        return batch_id
     return str(batch_object.id)
 
 
 def _batch_status(provider_name: str, batch_object: Any) -> str:
     """Return a normalized status string for the provider batch object."""
 
-    if provider_name == "openai":
+    if provider_name == "openai" or provider_name == "moonshot":
         return str(batch_object.status)
     if provider_name == "anthropic":
         return str(batch_object.processing_status)
@@ -1402,6 +1714,11 @@ def _batch_status(provider_name: str, batch_object: Any) -> str:
         if num_error > 0 or num_cancelled > 0:
             return "completed_with_errors"
         return "completed"
+    if provider_name == "together":
+        status = _get_together_batch_field(batch_object, "status")
+        if status is None:
+            raise ValueError("Together batch object did not include status")
+        return status
     raise ValueError(f"Unsupported provider: {provider_name}")
 
 

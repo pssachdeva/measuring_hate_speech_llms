@@ -1,7 +1,6 @@
 import json
 
 import pandas as pd
-import pytest
 
 from mhs_llms.schema import (
     normalize_human_annotation,
@@ -99,27 +98,28 @@ def test_normalize_human_annotation_uses_none_of_the_above_when_no_targets_are_s
     assert record.target_groups == ["I"]
 
 
-def test_normalize_model_annotation_validates_none_of_the_above_exclusivity() -> None:
-    with pytest.raises(ValueError, match="cannot combine 'I' with other codes"):
-        normalize_model_annotation(
-            comment_id=12,
-            judge_id="openai:test",
-            text="test comment",
-            payload={
-                "target_groups": ["I", "A"],
-                "sentiment": "C",
-                "respect": "C",
-                "insult": "A",
-                "humiliate": "A",
-                "status": "C",
-                "dehumanize": "A",
-                "violence": "A",
-                "genocide": "A",
-                "attack_defend": "C",
-                "hate_speech": "B",
-            },
-            metadata={},
-        )
+def test_normalize_model_annotation_allows_none_of_the_above_with_other_targets() -> None:
+    record = normalize_model_annotation(
+        comment_id=12,
+        judge_id="openai:test",
+        text="test comment",
+        payload={
+            "target_groups": ["I", "A"],
+            "sentiment": "C",
+            "respect": "C",
+            "insult": "A",
+            "humiliate": "A",
+            "status": "C",
+            "dehumanize": "A",
+            "violence": "A",
+            "genocide": "A",
+            "attack_defend": "C",
+            "hate_speech": "B",
+        },
+        metadata={},
+    )
+
+    assert record.target_groups == ["I", "A"]
 
 
 def test_prompt_letter_to_hf_value_matches_human_coding() -> None:
