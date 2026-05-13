@@ -63,6 +63,7 @@ PROVIDER_API_ENV_VARS = {
     "openrouter": "OPENROUTER_API_KEY",
     "together": "TOGETHER_API_KEY",
     "moonshot": "MOONSHOT_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
 }
 
 XAI_API_BASE_URL = "https://api.x.ai"

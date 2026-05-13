@@ -1,4 +1,5 @@
 from mhs_llms.retry_direct import (
+    _parse_openai_compatible_streaming_lines,
     _parse_together_streaming_lines,
     _merge_processed_rows,
     _merge_processing_errors,
@@ -113,5 +114,20 @@ def test_parse_together_streaming_lines_combines_delta_content() -> None:
     )
 
     assert response_text == '{"target_groups": ["I"]}'
+    assert provider_response["stream"] is True
+    assert provider_response["choices"][0]["message"]["content"] == response_text
+
+
+def test_parse_openai_compatible_streaming_lines_combines_delta_content() -> None:
+    provider_response, response_text = _parse_openai_compatible_streaming_lines(
+        [
+            b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n',
+            b'data: {"choices":[{"delta":{"content":"{\\"hate_speech\\":"}}]}\n',
+            b'data: {"choices":[{"delta":{"content":" \\"B\\"}"}}]}\n',
+            b"data: [DONE]\n",
+        ]
+    )
+
+    assert response_text == '{"hate_speech": "B"}'
     assert provider_response["stream"] is True
     assert provider_response["choices"][0]["message"]["content"] == response_text

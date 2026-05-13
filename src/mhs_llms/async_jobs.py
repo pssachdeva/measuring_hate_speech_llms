@@ -1,8 +1,10 @@
 """Sequential per-query launch and processing helpers for provider-hosted jobs."""
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import subprocess
 import time
 from typing import Any
 
@@ -46,6 +48,8 @@ ASYNC_PROCESSING_ERRORS_FILENAME = "async_processing_errors.jsonl"
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_TITLE = "measuring-hate-speech-llms"
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+MOONSHOT_API_BASE_URL = "https://api.moonshot.ai/v1"
 
 
 @dataclass(frozen=True)
@@ -131,7 +135,7 @@ def launch_async_for_config(
     config_path: Path | None = None,
     show_progress: bool = False,
 ) -> LaunchAsyncOutputs:
-    """Issue sequential provider requests for one model and save one file per successful query."""
+    """Issue async provider requests for one model and save one file per successful query."""
 
     paths = _async_storage_paths(config)
     paths.responses_dir.mkdir(parents=True, exist_ok=True)
@@ -140,7 +144,13 @@ def launch_async_for_config(
     _write_jsonl(paths.manifest_path, [row["manifest"] for row in request_rows])
 
     request_errors: list[dict[str, Any]] = []
-    skipped_existing_count = 0
+    runnable_rows: list[dict[str, Any]] = []
+    skipped_existing_count = _partition_async_request_rows(
+        config=config,
+        request_rows=request_rows,
+        responses_dir=paths.responses_dir,
+        runnable_rows=runnable_rows,
+    )
     progress_bar = (
         tqdm(
             total=len(request_rows),
@@ -153,76 +163,28 @@ def launch_async_for_config(
     )
 
     try:
-        for request_row in request_rows:
-            response_path = paths.responses_dir / f"{request_row['custom_id']}.json"
-            if _has_valid_async_annotation_response(config=config, request_row=request_row, response_path=response_path):
-                skipped_existing_count += 1
-                if progress_bar is not None:
-                    progress_bar.update(1)
-                continue
-
-            for attempt_number in range(1, config.async_retries.max_attempts + 1):
-                provider_response: dict[str, Any] | None = None
-                response_text = ""
-                try:
-                    provider_response, response_text = _execute_async_request(
-                        config=config,
-                        request_payload=request_row["provider_request"],
-                    )
-                    _validate_async_response(
-                        config=config,
-                        request_row=request_row,
-                        response_path=response_path,
-                        response_text=response_text,
-                        provider_response=provider_response,
-                    )
-                    _write_json(
-                        response_path,
-                        {
-                            "config_path": str(config_path.resolve()) if config_path is not None else None,
-                            "name": config.name,
-                            "model_id": _model_id(config),
-                            "provider": config.model.provider,
-                            "model": config.model.name,
-                            "judge_id": _judge_id(config),
-                            "custom_id": request_row["custom_id"],
-                            "comment_id": request_row["comment_id"],
-                            "text": request_row["text"],
-                            "system_prompt": request_row["system_prompt"],
-                            "user_prompt": request_row["user_prompt"],
-                            "provider_request": request_row["provider_request"],
-                            "provider_response": provider_response,
-                            "response_text": response_text,
-                            "attempt_number": attempt_number,
-                            "completed_at": _utcnow(),
-                        },
-                    )
-                    break
-                except Exception as exc:  # noqa: BLE001
-                    request_errors.append(
-                        _build_async_request_error_record(
-                            config=config,
-                            request_row=request_row,
-                            response_text=response_text,
-                            provider_response=provider_response,
-                            exception=exc,
-                            attempt_number=attempt_number,
-                        )
-                    )
-                    if attempt_number == config.async_retries.max_attempts:
-                        break
-                    logger.info(
-                        "Retrying async request {} for {} after failed attempt {} / {}",
-                        request_row["custom_id"],
-                        _model_id(config),
-                        attempt_number,
-                        config.async_retries.max_attempts,
-                    )
-                    if config.async_retries.retry_delay_seconds > 0:
-                        time.sleep(config.async_retries.retry_delay_seconds)
-
-            if progress_bar is not None:
-                progress_bar.update(1)
+        if progress_bar is not None and skipped_existing_count:
+            progress_bar.update(skipped_existing_count)
+        if config.async_retries.concurrency > 1:
+            request_errors.extend(
+                _launch_async_concurrent(
+                    config=config,
+                    config_path=config_path,
+                    paths=paths,
+                    request_rows=runnable_rows,
+                    progress_bar=progress_bar,
+                )
+            )
+        else:
+            request_errors.extend(
+                _launch_async_sequential(
+                    config=config,
+                    config_path=config_path,
+                    paths=paths,
+                    request_rows=runnable_rows,
+                    progress_bar=progress_bar,
+                )
+            )
     finally:
         if progress_bar is not None:
             progress_bar.close()
@@ -245,6 +207,7 @@ def launch_async_for_config(
             "request_error_count": len(request_errors),
             "max_attempts": config.async_retries.max_attempts,
             "retry_delay_seconds": config.async_retries.retry_delay_seconds,
+            "concurrency": config.async_retries.concurrency,
             "responses_dir": str(paths.responses_dir),
             "last_launched_at": _utcnow(),
         },
@@ -266,6 +229,158 @@ def launch_async_for_config(
         error_count=len(request_errors),
         total_requests=len(request_rows),
     )
+
+
+def _partition_async_request_rows(
+    *,
+    config: ModelBatchConfig,
+    request_rows: list[dict[str, Any]],
+    responses_dir: Path,
+    runnable_rows: list[dict[str, Any]],
+) -> int:
+    """Split request rows into already-valid saved rows and rows that need execution."""
+
+    skipped_existing_count = 0
+    for request_row in request_rows:
+        response_path = responses_dir / f"{request_row['custom_id']}.json"
+        if _has_valid_async_annotation_response(
+            config=config,
+            request_row=request_row,
+            response_path=response_path,
+        ):
+            skipped_existing_count += 1
+        else:
+            runnable_rows.append(request_row)
+    return skipped_existing_count
+
+
+def _launch_async_sequential(
+    *,
+    config: ModelBatchConfig,
+    config_path: Path | None,
+    paths: AsyncStoragePaths,
+    request_rows: list[dict[str, Any]],
+    progress_bar: Any,
+) -> list[dict[str, Any]]:
+    """Run async requests with the default sequential pipeline."""
+
+    request_errors: list[dict[str, Any]] = []
+    for request_row in request_rows:
+        request_errors.extend(
+            _run_one_async_request_with_retries(
+                config=config,
+                config_path=config_path,
+                paths=paths,
+                request_row=request_row,
+            )
+        )
+        if progress_bar is not None:
+            progress_bar.update(1)
+    return request_errors
+
+
+def _launch_async_concurrent(
+    *,
+    config: ModelBatchConfig,
+    config_path: Path | None,
+    paths: AsyncStoragePaths,
+    request_rows: list[dict[str, Any]],
+    progress_bar: Any,
+) -> list[dict[str, Any]]:
+    """Run async requests through the opt-in bounded-concurrency pipeline."""
+
+    request_errors: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=config.async_retries.concurrency) as executor:
+        futures = [
+            executor.submit(
+                _run_one_async_request_with_retries,
+                config=config,
+                config_path=config_path,
+                paths=paths,
+                request_row=request_row,
+            )
+            for request_row in request_rows
+        ]
+        for future in as_completed(futures):
+            request_errors.extend(future.result())
+            if progress_bar is not None:
+                progress_bar.update(1)
+    return request_errors
+
+
+def _run_one_async_request_with_retries(
+    *,
+    config: ModelBatchConfig,
+    config_path: Path | None,
+    paths: AsyncStoragePaths,
+    request_row: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Run one async request with configured retries and save the response on success."""
+
+    response_path = paths.responses_dir / f"{request_row['custom_id']}.json"
+    request_errors: list[dict[str, Any]] = []
+    for attempt_number in range(1, config.async_retries.max_attempts + 1):
+        provider_response: dict[str, Any] | None = None
+        response_text = ""
+        try:
+            request_started_at = _utcnow()
+            provider_response, response_text = _execute_async_request(
+                config=config,
+                request_payload=request_row["provider_request"],
+            )
+            _validate_async_response(
+                config=config,
+                request_row=request_row,
+                response_path=response_path,
+                response_text=response_text,
+                provider_response=provider_response,
+            )
+            _write_json(
+                response_path,
+                {
+                    "config_path": str(config_path.resolve()) if config_path is not None else None,
+                    "name": config.name,
+                    "model_id": _model_id(config),
+                    "provider": config.model.provider,
+                    "model": config.model.name,
+                    "judge_id": _judge_id(config),
+                    "custom_id": request_row["custom_id"],
+                    "comment_id": request_row["comment_id"],
+                    "text": request_row["text"],
+                    "system_prompt": request_row["system_prompt"],
+                    "user_prompt": request_row["user_prompt"],
+                    "provider_request": request_row["provider_request"],
+                    "provider_response": provider_response,
+                    "response_text": response_text,
+                    "attempt_number": attempt_number,
+                    "request_started_at": request_started_at,
+                    "completed_at": _utcnow(),
+                },
+            )
+            break
+        except Exception as exc:  # noqa: BLE001
+            request_errors.append(
+                _build_async_request_error_record(
+                    config=config,
+                    request_row=request_row,
+                    response_text=response_text,
+                    provider_response=provider_response,
+                    exception=exc,
+                    attempt_number=attempt_number,
+                )
+            )
+            if attempt_number == config.async_retries.max_attempts:
+                break
+            logger.info(
+                "Retrying async request {} for {} after failed attempt {} / {}",
+                request_row["custom_id"],
+                _model_id(config),
+                attempt_number,
+                config.async_retries.max_attempts,
+            )
+            if config.async_retries.retry_delay_seconds > 0:
+                time.sleep(config.async_retries.retry_delay_seconds)
+    return request_errors
 
 
 def process_async(
@@ -498,6 +613,37 @@ def _build_async_provider_request(
             payload["reasoning"] = reasoning_payload
         return payload
 
+    if provider == "deepseek":
+        payload = {
+            "model": config.model.name,
+            "messages": _openai_messages(system_prompt, user_prompt),
+        }
+        if config.model.max_tokens is not None:
+            payload["max_tokens"] = config.model.max_tokens
+        if config.model.reasoning.effort is not None:
+            payload["reasoning_effort"] = config.model.reasoning.effort
+        if config.model.reasoning.budget_tokens is not None:
+            raise ValueError("DeepSeek async requests do not support reasoning.budget_tokens")
+        if config.model.params:
+            payload.update(config.model.params)
+        return payload
+
+    if provider == "moonshot":
+        if config.model.reasoning.effort is not None or config.model.reasoning.budget_tokens is not None:
+            raise ValueError(
+                "Moonshot async requests support thinking only as a provider-specific "
+                "model param, e.g. params.thinking.type=enabled"
+            )
+        payload = {
+            "model": config.model.name,
+            "messages": _openai_messages(system_prompt, user_prompt),
+        }
+        if config.model.max_tokens is not None:
+            payload["max_tokens"] = config.model.max_tokens
+        if config.model.params:
+            payload.update(config.model.params)
+        return payload
+
     if provider == "anthropic":
         payload = {
             "model": config.model.name,
@@ -570,6 +716,18 @@ def _execute_async_request(
         payload = _to_jsonable(response)
         return payload, _coerce_async_openai_text(provider_name=provider, payload=payload)
 
+    if provider == "deepseek":
+        return _execute_deepseek_streaming_request(config=config, request_payload=request_payload)
+
+    if provider == "moonshot":
+        return _execute_openai_compatible_streaming_request(
+            config=config,
+            request_payload=request_payload,
+            base_url=MOONSHOT_API_BASE_URL,
+            provider_label="Moonshot",
+            include_usage=False,
+        )
+
     if provider == "anthropic":
         client = Anthropic(api_key=_provider_api_key(config))
         response = client.messages.create(**request_payload)
@@ -596,6 +754,106 @@ def _execute_async_request(
         return payload, _coerce_google_response_to_text(payload)
 
     raise ValueError(f"Unsupported async provider: {provider}")
+
+
+def _execute_openai_compatible_streaming_request(
+    config: ModelBatchConfig,
+    request_payload: dict[str, Any],
+    base_url: str,
+    provider_label: str,
+    include_usage: bool,
+) -> tuple[dict[str, Any], str]:
+    """Execute one OpenAI-compatible streaming chat completion and collect text."""
+
+    payload = dict(request_payload)
+    payload["stream"] = True
+    if include_usage:
+        payload.setdefault("stream_options", {"include_usage": True})
+    process = subprocess.Popen(
+        [
+            "curl",
+            "--no-buffer",
+            "--silent",
+            "--show-error",
+            "--fail-with-body",
+            "-X",
+            "POST",
+            f"{base_url}/chat/completions",
+            "-H",
+            f"Authorization: Bearer {_provider_api_key(config)}",
+            "-H",
+            "Accept: text/event-stream",
+            "-H",
+            "Content-Type: application/json",
+            "--data-binary",
+            json.dumps(payload),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if process.stdout is None or process.stderr is None:
+        raise ValueError(f"Could not open curl pipes for {provider_label} streaming request")
+
+    provider_response, response_text = _parse_openai_compatible_streaming_lines(process.stdout)
+    stderr_text = process.stderr.read().decode("utf-8", errors="replace")
+    returncode = process.wait()
+    if returncode != 0:
+        raise ValueError(
+            f"{provider_label} streaming request failed "
+            f"(exit={returncode}): {stderr_text}{response_text}"
+        )
+    return provider_response, response_text
+
+
+def _execute_deepseek_streaming_request(
+    config: ModelBatchConfig,
+    request_payload: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    """Execute one DeepSeek chat completion with streaming enabled and collect text."""
+
+    return _execute_openai_compatible_streaming_request(
+        config=config,
+        request_payload=request_payload,
+        base_url=DEEPSEEK_BASE_URL,
+        provider_label="DeepSeek",
+        include_usage=True,
+    )
+
+
+def _parse_openai_compatible_streaming_lines(lines: Any) -> tuple[dict[str, Any], str]:
+    """Parse OpenAI-compatible SSE chunks into provider metadata and final text."""
+
+    events: list[dict[str, Any]] = []
+    text_chunks: list[str] = []
+    usage: dict[str, Any] | None = None
+    for raw_line in lines:
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line or line.startswith(":") or not line.startswith("data:"):
+            continue
+        data = line[len("data:") :].strip()
+        if data == "[DONE]":
+            break
+        event = json.loads(data)
+        events.append(event)
+        if isinstance(event.get("usage"), dict):
+            usage = event["usage"]
+        choices = event.get("choices", [])
+        if not choices:
+            continue
+        delta = choices[0].get("delta", {})
+        content = delta.get("content")
+        if content:
+            text_chunks.append(str(content))
+
+    response_text = "".join(text_chunks)
+    provider_response: dict[str, Any] = {
+        "stream": True,
+        "events": events,
+        "choices": [{"message": {"content": response_text}}],
+    }
+    if usage is not None:
+        provider_response["usage"] = usage
+    return provider_response, response_text
 
 
 def _is_valid_async_response_file(path: Path) -> bool:

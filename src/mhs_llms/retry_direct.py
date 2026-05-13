@@ -1,6 +1,7 @@
 """Direct retry helpers for reissuing failed batch requests one item at a time."""
 
 from dataclasses import dataclass, replace
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from pathlib import Path
 import subprocess
@@ -13,6 +14,7 @@ from openai import OpenAI
 import pandas as pd
 
 from mhs_llms.batch import (
+    MOONSHOT_API_BASE_URL,
     TOGETHER_API_BASE_URL,
     _apply_anthropic_request_reasoning,
     _build_processing_error_record,
@@ -64,8 +66,12 @@ def retry_errored_requests(
     effort: str | None = None,
     retry_root: Path | None = None,
     include_all_cols: bool = False,
+    concurrency: int = 1,
 ) -> DirectRetryOutputs:
     """Retry failed batch items directly against the provider and rebuild merged outputs."""
+
+    if concurrency < 1:
+        raise ValueError("concurrency must be at least 1")
 
     resolved_config_path = config_path.resolve()
     configs = load_model_batch_configs(resolved_config_path)
@@ -99,6 +105,7 @@ def retry_errored_requests(
             effort=effort,
             retry_root=retry_root,
             include_all_cols=include_all_cols,
+            concurrency=concurrency,
             config_path=resolved_config_path,
         )
         outputs.append(output)
@@ -121,6 +128,7 @@ def _retry_errored_for_config(
     effort: str | None,
     retry_root: Path | None,
     include_all_cols: bool,
+    concurrency: int,
     config_path: Path,
 ) -> DirectRetryModelOutputs:
     """Retry one model's errored rows and write merged per-model outputs."""
@@ -179,70 +187,51 @@ def _retry_errored_for_config(
     processing_errors: list[dict[str, Any]] = []
 
     total_retries = len(retry_manifest_rows)
-    for retry_index, manifest_row in enumerate(retry_manifest_rows, start=1):
-        custom_id = str(manifest_row["custom_id"])
-        comment_id = int(manifest_row["comment_id"])
-        comment_text = str(manifest_row["text"])
-        user_prompt = _user_prompt(config=retry_config, comment_text=comment_text)
-        request_payload = _build_direct_provider_request(
-            config=retry_config,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-        )
-        logger.info(
-            "Direct retry {}/{} for {} ({})",
-            retry_index,
-            total_retries,
-            custom_id,
-            retry_config.model.provider,
-        )
-
-        try:
-            provider_response, response_text = _execute_direct_request(
+    retry_overrides = {
+        "max_tokens": max_tokens,
+        "budget_tokens": budget_tokens,
+        "effort": effort,
+    }
+    if concurrency == 1:
+        for retry_index, manifest_row in enumerate(retry_manifest_rows, start=1):
+            raw_result, processed_row, processing_error = _retry_one_manifest_row(
                 config=retry_config,
-                request_payload=request_payload,
+                manifest_row=manifest_row,
+                retry_index=retry_index,
+                total_retries=total_retries,
+                system_prompt=system_prompt,
+                retry_overrides=retry_overrides,
+                include_all_cols=include_all_cols,
             )
-            raw_retry_results.append(
-                {
-                    "comment_id": comment_id,
-                    "custom_id": custom_id,
-                    "provider_response": provider_response,
-                    "request_payload": request_payload,
-                    "response_text": response_text,
-                }
-            )
-            payload = _parse_response_json(response_text)
-            record = normalize_model_annotation(
-                comment_id=comment_id,
-                judge_id=_judge_id(retry_config),
-                text=comment_text,
-                payload=payload,
-                metadata={
-                    "provider": retry_config.model.provider,
-                    "model": retry_config.model.name,
-                    "custom_id": custom_id,
-                    "retry": True,
-                    "retry_overrides": {
-                        "max_tokens": max_tokens,
-                        "budget_tokens": budget_tokens,
-                        "effort": effort,
-                    },
-                    "provider_response": provider_response,
-                },
-            )
-            processed_rows.append(
-                annotation_record_to_row(record, include_metadata=include_all_cols)
-            )
-        except Exception as exc:  # noqa: BLE001
-            processing_error = _direct_retry_error_record(
-                config=retry_config,
-                custom_id=custom_id,
-                comment_id=comment_id,
-                request_payload=request_payload,
-                exception=exc,
-                raw_retry_results=raw_retry_results,
-            )
-            processing_errors.append(processing_error)
+            if raw_result is not None:
+                raw_retry_results.append(raw_result)
+            if processed_row is not None:
+                processed_rows.append(processed_row)
+            if processing_error is not None:
+                processing_errors.append(processing_error)
+    else:
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = {
+                executor.submit(
+                    _retry_one_manifest_row,
+                    config=retry_config,
+                    manifest_row=manifest_row,
+                    retry_index=retry_index,
+                    total_retries=total_retries,
+                    system_prompt=system_prompt,
+                    retry_overrides=retry_overrides,
+                    include_all_cols=include_all_cols,
+                ): manifest_row
+                for retry_index, manifest_row in enumerate(retry_manifest_rows, start=1)
+            }
+            for future in as_completed(futures):
+                raw_result, processed_row, processing_error = future.result()
+                if raw_result is not None:
+                    raw_retry_results.append(raw_result)
+                if processed_row is not None:
+                    processed_rows.append(processed_row)
+                if processing_error is not None:
+                    processing_errors.append(processing_error)
 
     retry_manifest_path = retry_run_dir / retry_config.batches.request_manifest_filename
     retry_raw_results_path = retry_run_dir / retry_config.batches.raw_results_filename
@@ -272,6 +261,7 @@ def _retry_errored_for_config(
                 "max_tokens": max_tokens,
                 "budget_tokens": budget_tokens,
                 "effort": effort,
+                "concurrency": concurrency,
             },
         },
     )
@@ -295,6 +285,7 @@ def _retry_errored_for_config(
                 "max_tokens": max_tokens,
                 "budget_tokens": budget_tokens,
                 "effort": effort,
+                "concurrency": concurrency,
             },
         },
     )
@@ -313,6 +304,86 @@ def _retry_errored_for_config(
         merged_processed_records_path=original_processed_records_path,
         merged_processed_csv_path=original_processed_csv_path,
     )
+
+
+def _retry_one_manifest_row(
+    *,
+    config: ModelBatchConfig,
+    manifest_row: dict[str, Any],
+    retry_index: int,
+    total_retries: int,
+    system_prompt: str,
+    retry_overrides: dict[str, Any],
+    include_all_cols: bool,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    """Retry one failed manifest row and return raw, processed, and error artifacts."""
+
+    custom_id = str(manifest_row["custom_id"])
+    comment_id = int(manifest_row["comment_id"])
+    comment_text = str(manifest_row["text"])
+    user_prompt = _user_prompt(config=config, comment_text=comment_text)
+    request_payload = _build_direct_provider_request(
+        config=config,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+    )
+    logger.info(
+        "Direct retry {}/{} for {} ({})",
+        retry_index,
+        total_retries,
+        custom_id,
+        config.model.provider,
+    )
+
+    try:
+        provider_response, response_text = _execute_direct_request(
+            config=config,
+            request_payload=request_payload,
+        )
+        raw_result = {
+            "comment_id": comment_id,
+            "custom_id": custom_id,
+            "provider_response": provider_response,
+            "request_payload": request_payload,
+            "response_text": response_text,
+        }
+        payload = _parse_response_json(response_text)
+        record = normalize_model_annotation(
+            comment_id=comment_id,
+            judge_id=_judge_id(config),
+            text=comment_text,
+            payload=payload,
+            metadata={
+                "provider": config.model.provider,
+                "model": config.model.name,
+                "custom_id": custom_id,
+                "retry": True,
+                "retry_overrides": retry_overrides,
+                "provider_response": provider_response,
+            },
+        )
+        return raw_result, annotation_record_to_row(record, include_metadata=include_all_cols), None
+    except Exception as exc:  # noqa: BLE001
+        raw_result = locals().get("raw_result")
+        if isinstance(raw_result, dict):
+            return raw_result, None, _build_processing_error_record(
+                provider_name=config.model.provider,
+                custom_id=custom_id,
+                comment_id=comment_id,
+                response_text=str(raw_result.get("response_text", "")),
+                response_metadata=raw_result.get("provider_response"),
+                exception=exc,
+            ) | {
+                "request_payload": request_payload,
+                "raw_result": raw_result,
+            }
+        return None, None, {
+            "comment_id": comment_id,
+            "custom_id": custom_id,
+            "error": f"Direct request failed before processing: {exc}",
+            "error_type": "direct_request_error",
+            "request_payload": request_payload,
+        }
 
 
 def _apply_retry_results_to_original_run(
@@ -507,6 +578,24 @@ def _build_direct_provider_request(
         payload.update(config.model.params)
         return payload
 
+    if provider == "moonshot":
+        if config.model.reasoning.effort is not None or config.model.reasoning.budget_tokens is not None:
+            raise ValueError(
+                "Moonshot direct retries support thinking only as a provider-specific "
+                "model param, e.g. params.thinking.type=enabled"
+            )
+        payload = {
+            "model": config.model.name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        if config.model.max_tokens is not None:
+            payload["max_tokens"] = config.model.max_tokens
+        payload.update(config.model.params)
+        return payload
+
     raise ValueError(f"Unsupported provider for direct retry: {provider}")
 
 
@@ -549,16 +638,31 @@ def _execute_direct_request(
         return payload, _coerce_openai_content_to_text(payload["choices"][0]["message"]["content"])
 
     if provider == "together":
-        return _execute_together_streaming_request(config=config, request_payload=request_payload)
+        return _execute_openai_compatible_streaming_request(
+            config=config,
+            request_payload=request_payload,
+            base_url=TOGETHER_API_BASE_URL,
+            provider_label="Together",
+        )
+
+    if provider == "moonshot":
+        return _execute_openai_compatible_streaming_request(
+            config=config,
+            request_payload=request_payload,
+            base_url=MOONSHOT_API_BASE_URL,
+            provider_label="Moonshot",
+        )
 
     raise ValueError(f"Unsupported provider for direct retry: {provider}")
 
 
-def _execute_together_streaming_request(
+def _execute_openai_compatible_streaming_request(
     config: ModelBatchConfig,
     request_payload: dict[str, Any],
+    base_url: str,
+    provider_label: str,
 ) -> tuple[dict[str, Any], str]:
-    """Execute one Together chat completion with streaming enabled and collect the text."""
+    """Execute one OpenAI-compatible streaming chat completion and collect the text."""
 
     payload = dict(request_payload)
     payload["stream"] = True
@@ -571,7 +675,7 @@ def _execute_together_streaming_request(
             "--fail-with-body",
             "-X",
             "POST",
-            f"{TOGETHER_API_BASE_URL}/chat/completions",
+            f"{base_url}/chat/completions",
             "-H",
             f"Authorization: Bearer {_provider_api_key(config)}",
             "-H",
@@ -585,21 +689,21 @@ def _execute_together_streaming_request(
         stderr=subprocess.PIPE,
     )
     if process.stdout is None or process.stderr is None:
-        raise ValueError("Could not open curl pipes for Together streaming request")
+        raise ValueError(f"Could not open curl pipes for {provider_label} streaming request")
 
-    provider_response, response_text = _parse_together_streaming_lines(process.stdout)
+    provider_response, response_text = _parse_openai_compatible_streaming_lines(process.stdout)
     stderr_text = process.stderr.read().decode("utf-8", errors="replace")
     returncode = process.wait()
     if returncode != 0:
         raise ValueError(
-            "Together streaming request failed "
+            f"{provider_label} streaming request failed "
             f"(exit={returncode}): {stderr_text}{response_text}"
         )
     return provider_response, response_text
 
 
-def _parse_together_streaming_lines(lines: Any) -> tuple[dict[str, Any], str]:
-    """Parse OpenAI-compatible Together SSE chunks into provider metadata and text."""
+def _parse_openai_compatible_streaming_lines(lines: Any) -> tuple[dict[str, Any], str]:
+    """Parse OpenAI-compatible SSE chunks into provider metadata and text."""
 
     events: list[dict[str, Any]] = []
     text_chunks: list[str] = []
@@ -626,6 +730,12 @@ def _parse_together_streaming_lines(lines: Any) -> tuple[dict[str, Any], str]:
         "events": events,
         "choices": [{"message": {"content": response_text}}],
     }, response_text
+
+
+def _parse_together_streaming_lines(lines: Any) -> tuple[dict[str, Any], str]:
+    """Parse legacy Together SSE chunks into provider metadata and text."""
+
+    return _parse_openai_compatible_streaming_lines(lines)
 
 
 def _select_retry_manifest_rows(

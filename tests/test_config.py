@@ -227,6 +227,7 @@ prompt:
 async:
   max_attempts: 5
   retry_delay_seconds: 2.5
+  concurrency: 4
 
 models:
   - id: one
@@ -246,6 +247,7 @@ batches:
     assert len(configs) == 2
     assert all(config.async_retries.max_attempts == 5 for config in configs)
     assert all(config.async_retries.retry_delay_seconds == 2.5 for config in configs)
+    assert all(config.async_retries.concurrency == 4 for config in configs)
 
 
 def test_load_severity_decomposition_config_resolves_paths() -> None:

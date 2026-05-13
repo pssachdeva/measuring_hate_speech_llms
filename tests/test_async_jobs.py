@@ -12,6 +12,7 @@ from mhs_llms.async_jobs import (
     process_async_for_config,
 )
 from mhs_llms.config import (
+    AsyncRetryConfig,
     BatchModelConfig,
     BatchPromptConfig,
     BatchReasoningConfig,
@@ -191,6 +192,108 @@ def test_launch_async_for_config_retries_existing_invalid_saved_response(tmp_pat
     assert outputs.skipped_existing_count == 0
     assert calls == [1]
     assert saved_response["provider_response"]["id"] == "resp-1"
+
+
+def test_launch_async_for_config_uses_concurrent_pipeline_when_configured(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = make_config(tmp_path)
+    config = ModelBatchConfig(
+        name=config.name,
+        subset=config.subset,
+        limit=config.limit,
+        prompt=config.prompt,
+        model=config.model,
+        batches=config.batches,
+        async_retries=AsyncRetryConfig(concurrency=3),
+    )
+    monkeypatch.setattr(
+        async_jobs,
+        "_load_batch_comments",
+        lambda config: [
+            {"comment_id": 1, "text": "first"},
+            {"comment_id": 2, "text": "second"},
+        ],
+    )
+
+    called = {"concurrent": False, "sequential": False}
+
+    def fake_concurrent(*, config, config_path, paths, request_rows, progress_bar):
+        called["concurrent"] = True
+        for request_row in request_rows:
+            async_jobs._write_json(
+                paths.responses_dir / f"{request_row['custom_id']}.json",
+                {
+                    "custom_id": request_row["custom_id"],
+                    "comment_id": request_row["comment_id"],
+                    "text": request_row["text"],
+                    "provider_response": {"id": request_row["custom_id"]},
+                    "response_text": (
+                        '{"target_groups":["I"],"sentiment":"C","respect":"C","insult":"A",'
+                        '"humiliate":"A","status":"C","dehumanize":"A","violence":"A",'
+                        '"genocide":"A","attack_defend":"C","hate_speech":"B"}'
+                    ),
+                },
+            )
+        return []
+
+    def fake_sequential(*, config, config_path, paths, request_rows, progress_bar):
+        called["sequential"] = True
+        return []
+
+    monkeypatch.setattr(async_jobs, "_launch_async_concurrent", fake_concurrent)
+    monkeypatch.setattr(async_jobs, "_launch_async_sequential", fake_sequential)
+
+    outputs = launch_async_for_config(config)
+    metadata = json.loads(async_jobs._async_storage_paths(config).metadata_path.read_text())
+
+    assert outputs.completed_count == 2
+    assert called == {"concurrent": True, "sequential": False}
+    assert metadata["concurrency"] == 3
+
+
+def test_launch_async_for_config_keeps_sequential_pipeline_by_default(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = make_config(tmp_path)
+    monkeypatch.setattr(
+        async_jobs,
+        "_load_batch_comments",
+        lambda config: [{"comment_id": 1, "text": "first"}],
+    )
+
+    called = {"concurrent": False, "sequential": False}
+
+    def fake_concurrent(*, config, config_path, paths, request_rows, progress_bar):
+        called["concurrent"] = True
+        return []
+
+    def fake_sequential(*, config, config_path, paths, request_rows, progress_bar):
+        called["sequential"] = True
+        for request_row in request_rows:
+            async_jobs._write_json(
+                paths.responses_dir / f"{request_row['custom_id']}.json",
+                {
+                    "custom_id": request_row["custom_id"],
+                    "comment_id": request_row["comment_id"],
+                    "text": request_row["text"],
+                    "provider_response": {"id": request_row["custom_id"]},
+                    "response_text": (
+                        '{"target_groups":["I"],"sentiment":"C","respect":"C","insult":"A",'
+                        '"humiliate":"A","status":"C","dehumanize":"A","violence":"A",'
+                        '"genocide":"A","attack_defend":"C","hate_speech":"B"}'
+                    ),
+                },
+            )
+        return []
+
+    monkeypatch.setattr(async_jobs, "_launch_async_concurrent", fake_concurrent)
+    monkeypatch.setattr(async_jobs, "_launch_async_sequential", fake_sequential)
+
+    outputs = launch_async_for_config(config)
+
+    assert outputs.completed_count == 1
+    assert called == {"concurrent": False, "sequential": True}
 
 
 def test_execute_async_request_uses_openrouter_openai_client(tmp_path: Path, monkeypatch) -> None:

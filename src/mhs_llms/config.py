@@ -78,6 +78,7 @@ class BatchStorageConfig:
 class AsyncRetryConfig:
     max_attempts: int = 3
     retry_delay_seconds: float = 0.0
+    concurrency: int = 1
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,19 @@ class LLMFacetsConfig:
     annotation_paths: tuple[Path, ...]
     comment_scores_path: Path
     item_scores_path: Path
+    facets_run_dir: Path
+    facets_data_filename: str
+    facets_spec_filename: str
+    facets_score_filename: str
+    facets_output_filename: str
+    facets: FacetsConfig
+
+
+@dataclass(frozen=True)
+class LLMOnlyFacetsConfig:
+    """Config for an unanchored FACETS run estimated from model annotations only."""
+
+    annotation_paths: tuple[Path, ...]
     facets_run_dir: Path
     facets_data_filename: str
     facets_spec_filename: str
@@ -235,9 +249,13 @@ def _parse_async_retry_config(async_data: dict[str, Any] | None) -> AsyncRetryCo
         raise ValueError("async.max_attempts must be at least 1")
     if retry_delay_seconds < 0:
         raise ValueError("async.retry_delay_seconds must be non-negative")
+    concurrency = int(async_data.get("concurrency", 1))
+    if concurrency < 1:
+        raise ValueError("async.concurrency must be at least 1")
     return AsyncRetryConfig(
         max_attempts=max_attempts,
         retry_delay_seconds=retry_delay_seconds,
+        concurrency=concurrency,
     )
 
 
@@ -444,6 +462,35 @@ def load_llm_facets_config(config_path: Path) -> LLMFacetsConfig:
             data["output"].get("facets_output_filename", "llm_facets_output.txt")
         ),
         facets=facets,
+    )
+
+
+def load_llm_only_facets_config(config_path: Path) -> LLMOnlyFacetsConfig:
+    """Load config for an unanchored LLM-only FACETS prep run."""
+
+    config_path = config_path.resolve()
+    data = yaml.safe_load(config_path.read_text())
+
+    annotation_values = data["annotations"].get("paths")
+    if annotation_values is None:
+        annotation_values = [data["annotations"]["path"]]
+
+    return LLMOnlyFacetsConfig(
+        annotation_paths=tuple(_resolve_path(path_value) for path_value in annotation_values),
+        facets_run_dir=_resolve_path(data["output"]["facets_run_dir"]),
+        facets_data_filename=str(
+            data["output"].get("facets_data_filename", "llm_only_facets_data.tsv")
+        ),
+        facets_spec_filename=str(
+            data["output"].get("facets_spec_filename", "llm_only_facets_spec.txt")
+        ),
+        facets_score_filename=str(
+            data["output"].get("facets_score_filename", "llm_only_facets_scores.txt")
+        ),
+        facets_output_filename=str(
+            data["output"].get("facets_output_filename", "llm_only_facets_output.txt")
+        ),
+        facets=_parse_facets_config(data["facets"]),
     )
 
 
