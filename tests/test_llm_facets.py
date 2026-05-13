@@ -2,7 +2,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from mhs_llms.config import load_llm_facets_config
+from mhs_llms.config import load_llm_facets_config, load_llm_only_facets_config
+from mhs_llms.facets.llm_only import run_llm_only_facets
 from mhs_llms.llm_facets import run_anchored_llm_facets
 from mhs_llms.schema import ITEM_NAMES
 
@@ -142,6 +143,44 @@ def test_run_anchored_llm_facets_assigns_new_judge_ids_automatically(tmp_path: P
     assert outputs.facets_data_path.exists()
     assert "openai_gpt-5.4_low" in spec_text
     assert "openai_gpt-5.4_medium" in spec_text
+
+
+def test_run_llm_only_facets_writes_unanchored_outputs(tmp_path: Path) -> None:
+    annotation_path = tmp_path / "full_set_all_models.csv"
+    _annotation_frame(comment_id=20001, judge_id="model_a").to_csv(annotation_path, index=False)
+    config_path = tmp_path / "llm_only_facets.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "annotations:",
+                "  paths:",
+                f"    - {annotation_path}",
+                "output:",
+                f"  facets_run_dir: {tmp_path / 'facets_run'}",
+                "  facets_data_filename: llm_only.tsv",
+                "  facets_spec_filename: llm_only.txt",
+                "  facets_score_filename: llm_only_scores.txt",
+                "  facets_output_filename: llm_only_output.txt",
+                "facets:",
+                "  title: LLM Only Test",
+                '  model: "?, ?, #, R"',
+                "  noncenter: 1",
+            ]
+        )
+    )
+
+    config = load_llm_only_facets_config(config_path)
+    outputs = run_llm_only_facets(config_path)
+    spec_text = outputs.facets_spec_path.read_text()
+    first_data_line = outputs.facets_data_path.read_text().splitlines()[0]
+
+    assert config.annotation_paths[0] == annotation_path.resolve()
+    assert outputs.facets_data_path.exists()
+    assert outputs.facets_spec_path.exists()
+    assert "Anchors" not in spec_text
+    assert "1,Comments,A" not in spec_text
+    assert "model_a" in spec_text
+    assert first_data_line.endswith("\t3\t3\t1\t1\t3\t1\t1\t1\t1\t2")
 
 
 def _annotation_frame(comment_id: int, judge_id: str) -> pd.DataFrame:

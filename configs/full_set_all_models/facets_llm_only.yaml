@@ -1,0 +1,23 @@
+annotations:
+  paths:
+    - data/full_set_all_models_processed.csv
+
+output:
+  facets_run_dir: facets/full_set_all_models_llm_only
+  facets_data_filename: full_set_all_models_llm_only_data.tsv
+  facets_spec_filename: full_set_all_models_llm_only_spec.txt
+  facets_score_filename: full_set_all_models_llm_only_scores.txt
+  facets_output_filename: full_set_all_models_llm_only_output.txt
+
+facets:
+  title: MHS Full Set All Models LLM-Only Scale
+  model: "?, ?, #, R"
+  noncenter: 1
+  positive: 1
+  arrange: N
+  subset_detection: No
+  delements:
+    - 1N
+    - 2N
+    - 3N
+  csv: Tab

@@ -1,6 +1,7 @@
 """FACETS export and post-processing helpers."""
 
 from mhs_llms.facets.anchored import AnchoredLLMFacetsOutputs, run_anchored_llm_facets
+from mhs_llms.facets.llm_only import LLMOnlyFacetsOutputs, run_llm_only_facets
 from mhs_llms.facets.facets import (
     build_facets_frame,
     build_facets_spec,
@@ -42,6 +43,7 @@ from mhs_llms.facets.target_drf import (
 __all__ = [
     "AnchoredLLMFacetsOutputs",
     "FacetsPostprocessOutputs",
+    "LLMOnlyFacetsOutputs",
     "OrderEffectOutputs",
     "OrderEffectPostprocessOutputs",
     "SeverityDecompositionOutputs",
@@ -64,6 +66,7 @@ __all__ = [
     "process_severity_decomposition_run",
     "process_target_drf_run",
     "run_anchored_llm_facets",
+    "run_llm_only_facets",
     "run_order_effect_facets",
     "run_severity_decomposition_facets",
     "run_target_drf_facets",
