@@ -21,7 +21,11 @@ def _usage_from_row(row: dict) -> dict:
     """Return the OpenAI-compatible usage block from one batch result row."""
 
     response = row.get("response", {})
+    if not isinstance(response, dict):
+        return {}
     body = response.get("body", {})
+    if not isinstance(body, dict):
+        return {}
     usage = body.get("usage", {})
     return usage if isinstance(usage, dict) else {}
 

@@ -4,7 +4,7 @@ import sys
 
 from loguru import logger
 
-from mhs_llms.config import load_llm_facets_config
+from mhs_llms.config import load_llm_facets_config, load_llm_only_facets_config
 from mhs_llms.facets import process_facets_run
 
 
@@ -19,7 +19,11 @@ def main() -> None:
     logger.remove()
     logger.add(sys.stderr, level="INFO")
 
-    config = load_llm_facets_config(Path(args.config))
+    config_path = Path(args.config)
+    try:
+        config = load_llm_facets_config(config_path)
+    except KeyError:
+        config = load_llm_only_facets_config(config_path)
 
     outputs = process_facets_run(
         facets_dir=config.facets_run_dir,

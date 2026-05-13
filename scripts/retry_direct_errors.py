@@ -19,6 +19,7 @@ def retry_direct_errors(
     effort: str | None = None,
     retry_root: str | Path | None = None,
     include_all_cols: bool = False,
+    concurrency: int = 1,
 ) -> DirectRetryOutputs:
     """Retry failed rows directly against the provider using one config plus optional overrides."""
 
@@ -30,6 +31,7 @@ def retry_direct_errors(
         effort=effort,
         retry_root=Path(retry_root).resolve() if retry_root is not None else None,
         include_all_cols=include_all_cols,
+        concurrency=concurrency,
     )
 
 
@@ -51,6 +53,12 @@ def main() -> None:
     parser.add_argument("--effort", help="Override reasoning effort.")
     parser.add_argument("--retry-root", help="Optional directory for retry artifacts.")
     parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Number of direct retry requests to run at once.",
+    )
+    parser.add_argument(
         "--all-cols",
         action="store_true",
         help="Include optional metadata columns in processed outputs.",
@@ -68,6 +76,7 @@ def main() -> None:
         effort=args.effort,
         retry_root=args.retry_root,
         include_all_cols=args.all_cols,
+        concurrency=args.concurrency,
     )
     for output in outputs.outputs:
         print()
