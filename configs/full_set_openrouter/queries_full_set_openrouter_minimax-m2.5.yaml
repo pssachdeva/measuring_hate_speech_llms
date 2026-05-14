@@ -1,0 +1,31 @@
+name: full_set_openrouter_minimax-m2.5
+description: |
+  OpenRouter sequential async run for MiniMax M2.5 on MHS comments with 4+
+  human annotators.
+
+subset:
+  type: annotator_count_threshold
+  min: 4
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+  user_prompt_template: |
+    SOCIAL MEDIA COMMENT:
+    {comment_text}
+
+async:
+  max_attempts: 5
+  retry_delay_seconds: 2.0
+  concurrency: 5
+
+model:
+  id: openrouter_minimax_minimax-m2.5
+  provider: openrouter
+  name: minimax/minimax-m2.5
+  max_tokens: 4096
+  params:
+    temperature: 0.5
+
+batches:
+  run_dir: batches/full_set_openrouter_minimax-m2.5
+  combined_output_path: data/full_set_openrouter_minimax-m2.5_processed.csv

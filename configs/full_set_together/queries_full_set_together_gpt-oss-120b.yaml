@@ -1,0 +1,23 @@
+name: full_set_together_gpt-oss-120b
+description: |
+  Together Batch API full run for GPT-OSS 120B on MHS comments with 4+ human
+  annotators.
+
+subset:
+  type: annotator_count_threshold
+  min: 4
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+model:
+  id: together_openai_gpt-oss-120b
+  provider: together
+  name: openai/gpt-oss-120b
+  max_tokens: 4096
+  params:
+    reasoning_effort: low
+
+batches:
+  run_dir: batches/full_set_together_gpt-oss-120b
+  combined_output_path: data/full_set_together_gpt-oss-120b_processed.csv

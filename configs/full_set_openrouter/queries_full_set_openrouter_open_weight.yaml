@@ -1,0 +1,61 @@
+name: full_set_openrouter_open_weight
+description: |
+  OpenRouter open-weight primary panel annotation run for MHS comments with 4+
+  human annotators.
+
+subset:
+  type: annotator_count_threshold
+  min: 4
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+async:
+  max_attempts: 5
+  retry_delay_seconds: 2.0
+
+models:
+  - id: openrouter_deepseek_deepseek-v3.2
+    provider: openrouter
+    name: deepseek/deepseek-v3.2
+    max_tokens: 4096
+    reasoning:
+      effort: medium
+    params:
+      temperature: 0.5
+
+  - id: openrouter_moonshotai_kimi-k2.5
+    provider: openrouter
+    name: moonshotai/kimi-k2.5
+    max_tokens: 4096
+    reasoning:
+      effort: medium
+    params:
+      temperature: 0.5
+
+  - id: openrouter_openai_gpt-oss-120b
+    provider: openrouter
+    name: openai/gpt-oss-120b
+    max_tokens: 4096
+    reasoning:
+      effort: medium
+    params:
+      temperature: 0.5
+
+  - id: openrouter_meta-llama_llama-3.3-70b-instruct
+    provider: openrouter
+    name: meta-llama/llama-3.3-70b-instruct
+    max_tokens: 4096
+    params:
+      temperature: 0.5
+
+  - id: openrouter_google_gemma-3-27b-it
+    provider: openrouter
+    name: google/gemma-3-27b-it
+    max_tokens: 4096
+    params:
+      temperature: 0.5
+
+batches:
+  run_dir: batches/full_set_openrouter_open_weight
+  combined_output_path: data/full_set_openrouter_open_weight_processed.csv

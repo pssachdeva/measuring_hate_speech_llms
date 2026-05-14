@@ -1,0 +1,52 @@
+name: full_set_together_open_weight
+description: |
+  Together Batch API open-weight panel annotation run for MHS comments with 4+
+  human annotators. Uses Together-available equivalents where the exact
+  OpenRouter starter model is not listed by Together.
+
+subset:
+  type: annotator_count_threshold
+  min: 4
+
+prompt:
+  system_prompt_path: prompts/mhs_survey_v1.txt
+
+models:
+  - id: together_deepseek_deepseek-v3.1
+    provider: together
+    name: deepseek-ai/DeepSeek-V3.1
+    max_tokens: 4096
+    params:
+      temperature: 0.5
+
+  - id: together_moonshotai_kimi-k2.5
+    provider: together
+    name: moonshotai/Kimi-K2.5
+    max_tokens: 4096
+    params:
+      temperature: 0.5
+
+  - id: together_openai_gpt-oss-120b
+    provider: together
+    name: openai/gpt-oss-120b
+    max_tokens: 4096
+    params:
+      temperature: 0.5
+
+  - id: together_meta-llama_llama-3.3-70b-instruct-turbo
+    provider: together
+    name: meta-llama/Llama-3.3-70B-Instruct-Turbo
+    max_tokens: 4096
+    params:
+      temperature: 0.5
+
+  - id: together_google_gemma-4-31b-it
+    provider: together
+    name: google/gemma-4-31B-it
+    max_tokens: 4096
+    params:
+      temperature: 0.5
+
+batches:
+  run_dir: batches/full_set_together_open_weight
+  combined_output_path: data/full_set_together_open_weight_processed.csv
