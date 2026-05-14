@@ -183,6 +183,36 @@ def test_run_llm_only_facets_writes_unanchored_outputs(tmp_path: Path) -> None:
     assert first_data_line.endswith("\t3\t3\t1\t1\t3\t1\t1\t1\t1\t2")
 
 
+def test_run_llm_only_facets_can_apply_human_recodes(tmp_path: Path) -> None:
+    annotation_path = tmp_path / "full_set_all_models.csv"
+    _annotation_frame(comment_id=20001, judge_id="model_a").to_csv(annotation_path, index=False)
+    config_path = tmp_path / "llm_only_recoded_facets.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "annotations:",
+                "  paths:",
+                f"    - {annotation_path}",
+                "scoring:",
+                "  recode_like_humans: true",
+                "output:",
+                f"  facets_run_dir: {tmp_path / 'facets_run_recoded'}",
+                "  facets_data_filename: llm_only.tsv",
+                "  facets_spec_filename: llm_only.txt",
+                "  facets_score_filename: llm_only_scores.txt",
+                "  facets_output_filename: llm_only_output.txt",
+                "facets:",
+                "  title: LLM Only Recoded Test",
+            ]
+        )
+    )
+
+    outputs = run_llm_only_facets(config_path)
+    first_data_line = outputs.facets_data_path.read_text().splitlines()[0]
+
+    assert first_data_line.endswith("\t3\t3\t0\t0\t1\t0\t0\t0\t0\t1")
+
+
 def _annotation_frame(comment_id: int, judge_id: str) -> pd.DataFrame:
     """Build one minimal processed LLM annotation row using prompt letters."""
 

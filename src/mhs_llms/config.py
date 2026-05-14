@@ -112,6 +112,7 @@ class LLMOnlyFacetsConfig:
     """Config for an unanchored FACETS run estimated from model annotations only."""
 
     annotation_paths: tuple[Path, ...]
+    recode_like_humans: bool
     facets_run_dir: Path
     facets_data_filename: str
     facets_spec_filename: str
@@ -477,6 +478,7 @@ def load_llm_only_facets_config(config_path: Path) -> LLMOnlyFacetsConfig:
 
     return LLMOnlyFacetsConfig(
         annotation_paths=tuple(_resolve_path(path_value) for path_value in annotation_values),
+        recode_like_humans=bool(data.get("scoring", {}).get("recode_like_humans", False)),
         facets_run_dir=_resolve_path(data["output"]["facets_run_dir"]),
         facets_data_filename=str(
             data["output"].get("facets_data_filename", "llm_only_facets_data.tsv")
